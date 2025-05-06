@@ -8,7 +8,8 @@ import torch.nn.functional as F
 
 from huggingface_hub import PyTorchModelHubMixin
 
-class VisionLanguageModel(nn.Module, PyTorchModelHubMixin, repo_url="https://github.com/huggingface/nanoVLM"):
+class VisionLanguageModel(nn.Module, PyTorchModelHubMixin, repo_url="https://github.com/huggingface/nanoVLM", 
+                          library_name="nanovlm", tags=["image-text-to-text"], license="mit"):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
