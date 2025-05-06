@@ -6,7 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class VisionLanguageModel(nn.Module):
+from huggingface_hub import PyTorchModelHubMixin
+
+class VisionLanguageModel(nn.Module, PyTorchModelHubMixin, repo_url="https://github.com/huggingface/nanoVLM"):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -98,11 +100,3 @@ class VisionLanguageModel(nn.Module):
         print(f"Loading weights from full VLM checkpoint: {path}")
         checkpoint = torch.load(path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))        
         self.load_state_dict(checkpoint)
-
-    @classmethod
-    def from_pretrained(cls, cfg):
-        model = cls(cfg)
-        model.vision_encoder = ViT.from_pretrained(cfg)
-        model.decoder = LanguageModel.from_pretrained(cfg)
-
-        return model
