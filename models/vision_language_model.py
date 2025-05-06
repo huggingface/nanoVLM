@@ -94,9 +94,22 @@ class VisionLanguageModel(nn.Module):
         
         return generated_tokens
         
-    def load_checkpoint(self, path):
+    def load_checkpoint(self, path: str):
         print(f"Loading weights from full VLM checkpoint: {path}")
-        checkpoint = torch.load(path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        if path.lower().endswith(".safetensors"):
+            try:
+                from safetensors.torch import load_file
+            except ImportError:
+                raise ImportError("safetensors is not installed. Please install it with `pip install safetensors` to load .safetensors files.")
+            checkpoint = load_file(path, device=str(device))
+        elif path.lower().endswith(".pth") or path.lower().endswith(".pt"): # Common PyTorch extensions
+            checkpoint = torch.load(path, map_location=device)
+        else:
+            print(f"Warning: Unknown file extension for checkpoint: {path}. Attempting to load with torch.load.")
+            checkpoint = torch.load(path, map_location=device)
+            
         self.load_state_dict(checkpoint)
 
     @classmethod
