@@ -1,3 +1,4 @@
+from models.config import VLMConfig
 from models.vision_transformer import ViT
 from models.language_model import LanguageModel
 from models.modality_projector import ModalityProjector
@@ -10,7 +11,7 @@ from huggingface_hub import PyTorchModelHubMixin
 
 class VisionLanguageModel(nn.Module, PyTorchModelHubMixin, repo_url="https://github.com/huggingface/nanoVLM", 
                           library_name="nanovlm", tags=["image-text-to-text"], license="mit"):
-    def __init__(self, cfg):
+    def __init__(self, cfg: VLMConfig):
         super().__init__()
         self.cfg = cfg
         self.vision_encoder = ViT(cfg)
