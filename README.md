@@ -36,12 +36,12 @@ If you want to use `uv`:
 uv init --bare
 uv sync --python 3.12
 source .venv/bin/activate
-uv add torch numpy torchvision pillow datasets huggingface-hub transformers
+uv add torch numpy torchvision pillow datasets wandb huggingface-hub transformers
 ```
 
 If you prefer another environment manager, simply install these packages:  
 ```bash
-pip install torch numpy torchvision pillow datasets huggingface-hub transformers
+pip install torch numpy torchvision pillow datasets wandb huggingface-hub transformers
 ```
 Dependencies: 
 - `torch` <3
@@ -49,6 +49,7 @@ Dependencies:
 - `torchvision` for the image processors
 - `pillow` for image loading
 - `datasets` for the training datasets
+- `wandb` for experiment tracking and logging (if enabled)
 - `huggingface-hub` & `transformers` to load the pretrained backbones
 
 ## Training
