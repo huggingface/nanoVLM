@@ -2,7 +2,7 @@
 
 ![nanoVLM](assets/nanoVLM.png)
 
-<a target="_blank" href="https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb">
+<a target="_blank" href="https://colab.research.google.com/github/charbull/nanoVLM/blob/main/nanoVLM.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>  
 
