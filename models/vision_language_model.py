@@ -16,17 +16,17 @@ import torch.nn.functional as F
 from safetensors.torch import load_model, save_model
 
 class VisionLanguageModel(nn.Module):
-    def __init__(self, cfg: VLMConfig, load_backbone=True):
+    def __init__(self, cfg: VLMConfig):
         super().__init__()
         self.cfg = cfg
-        if load_backbone:
+        if self.cfg.vlm_load_backbone_weights:
+            print("Loading from backbone weights")
             self.vision_encoder = ViT.from_pretrained(cfg)
             self.decoder = LanguageModel.from_pretrained(cfg)
         else:
             self.vision_encoder = ViT(cfg)
             self.decoder = LanguageModel(cfg)
         self.MP = ModalityProjector(cfg)
-        self.load_backbone = load_backbone
 
     def forward(self, input_ids, image, attention_mask=None, targets=None):
         image_embd = self.vision_encoder(image)
@@ -150,7 +150,8 @@ class VisionLanguageModel(nn.Module):
             cfg = VLMConfig(**json.load(f))
 
         # Initialize model
-        model = cls(cfg, load_backbone=False)
+        cfg.vlm_load_backbone_weights = False
+        model = cls(cfg)
 
         # Load safetensors weights
         load_model(model, weights_path)

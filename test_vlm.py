@@ -9,7 +9,8 @@ def test_equivalence():
     # Create the model with random weights
     print("Create the model with random weights")
     config = VLMConfig()
-    model = VisionLanguageModel(config, load_backbone=False)
+    config.vlm_load_backbone_weights = False
+    model = VisionLanguageModel(config)
 
     # Load the original `.pth` weights
     print("Load the original `.pth` weights")

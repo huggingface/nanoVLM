@@ -126,9 +126,7 @@ def train(train_cfg, vlm_cfg):
     # Initialize model
     if train_cfg.resume_from_vlm_checkpoint:
         model = VisionLanguageModel(vlm_cfg)
-        model.load_checkpoint(vlm_cfg.vlm_checkpoint_path)
-    elif vlm_cfg.vlm_load_backbone_weights:
-        model = VisionLanguageModel.from_pretrained(vlm_cfg)
+        model.from_pretrained(vlm_cfg.vlm_checkpoint_path)
     else:
         model = VisionLanguageModel(vlm_cfg)
     
