@@ -12,9 +12,9 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         irms = torch.rsqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps) # inverse of RMS
-        x = x * irms * self.weight
+        x = x * irms
 
-        return x
+        return self.weight * x
 
 # Multiple derivates of Rotary Embeddings by now, this is a basic one with linear scaling to context length
 # e.g. https://github.com/huggingface/smollm/blob/main/vision/m4/models/vllama3/modeling_vllama3.py#L190
