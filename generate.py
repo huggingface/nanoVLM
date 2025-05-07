@@ -10,7 +10,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load model from the Hugging Face Hub or a local directory
-model = VisionLanguageModel.from_pretrained("ariG23498/nanoVLM-demo").to(device)
+model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-222M").to(device)
 
 model.eval()
 

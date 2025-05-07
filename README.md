@@ -93,7 +93,7 @@ Here is how to load from a repo on the Hugging Face Hub. This is the recommended
 # Load pretrained weights from Hub
 from models.vision_language_model import VisionLanguageModel
 
-model = VisionLanguageModel.from_pretrained("ariG23498/nanoVLM-demo")
+model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-222M")
 ```
 
 ### Push to hub
