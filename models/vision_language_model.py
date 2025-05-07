@@ -139,7 +139,7 @@ class VisionLanguageModel(nn.Module):
 
         # Load config
         with open(config_path, "r") as f:
-            cfg = VLMConfig(**f.read())
+            cfg = VLMConfig(**json.load(f))
 
         # Initialize model
         model = cls(cfg)
@@ -164,7 +164,7 @@ class VisionLanguageModel(nn.Module):
 
         # Save config
         with open(os.path.join(save_directory, "config.json"), "w") as f:
-            f.write(json.dumps(asdict(self.cfg)))
+            f.write(json.dumps(asdict(self.cfg), indent=4))
 
         # Save weights as safetensors
         save_model(self, os.path.join(save_directory, "model.safetensors"))
