@@ -104,7 +104,7 @@ def test_mmstar(model, tokenizer, test_loader, device):
 
     return accuracy
 
-def train(train_cfg, vlm_cfg):
+def train(train_cfg, vlm_cfg) -> VisionLanguageModel:
     train_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer)
 
@@ -230,6 +230,7 @@ def train(train_cfg, vlm_cfg):
         run.summary["avg_time_per_sample"] = avg_time_per_sample
         run.summary["mmstar_acc"] = accuracy
         run.finish()
+    return model
 
 def main():
     parser = argparse.ArgumentParser()
