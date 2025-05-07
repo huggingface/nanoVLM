@@ -1,7 +1,8 @@
-import os
 import json
+import os
 import tempfile
 from dataclasses import asdict
+from typing import Optional
 
 
 from models.vision_transformer import ViT
@@ -103,7 +104,9 @@ class VisionLanguageModel(nn.Module):
         return generated_tokens
 
     @classmethod
-    def from_pretrained(cls, repo_id_or_path: str) -> "VisionLanguageModel":
+    def from_pretrained(
+        cls, repo_id_or_path: str, *, revision: Optional[str] = None
+    ) -> "VisionLanguageModel":
         """
         Load a VisionLanguageModel from a local directory or a repo on the Hugging Face Hub.
 
@@ -131,10 +134,10 @@ class VisionLanguageModel(nn.Module):
             from huggingface_hub import hf_hub_download
 
             config_path = hf_hub_download(
-                repo_id=repo_id_or_path, filename="config.json"
+                repo_id=repo_id_or_path, filename="config.json", revision=revision
             )
             weights_path = hf_hub_download(
-                repo_id=repo_id_or_path, filename="model.safetensors"
+                repo_id=repo_id_or_path, filename="model.safetensors", revision=revision
             )
 
         # Load config
