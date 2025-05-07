@@ -188,7 +188,6 @@ class ViT(nn.Module):
 
         sd = model.state_dict()
         
-
         mapping = {
             'vision_model.embeddings.patch_embedding.weight': 'patch_embedding.conv.weight',
             'vision_model.embeddings.patch_embedding.bias': 'patch_embedding.conv.bias',
