@@ -35,12 +35,12 @@ class VLMConfig:
     mp_pixel_shuffle_factor: int = 2
 
     vlm_load_backbone_weights: bool = True
-    vlm_checkpoint_path: str = 'nanoVLM.pth'
+    vlm_checkpoint_path: str = 'checkpoints/nanoVLM-222M'
 
 
 @dataclass
 class TrainConfig:
-    lr_mp: float = 1e-4
+    lr_mp: float = 1e-3
     lr_backbones: float = 5e-5
     data_cutoff_idx: int = None
     batch_size: int = 256
