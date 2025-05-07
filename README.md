@@ -20,7 +20,7 @@ Using the [`SigLIP-B/16-224-85M`](https://huggingface.co/google/siglip-base-patc
 It is therefore a simple but yet powerful platform to get started with VLMs. Perfect to tinker around with different setups and setting, to explore the capabilities and efficiencies of small VLMs!
 
 ## Quick Start
-You can either clone the repository, setup an environement and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
+You can either clone the repository, setup an environement and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/charbull/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
 
 ## Environment Setup
 We really like `uv` and recommend using it as your package manager. But feel free to use any one that you prefer.
