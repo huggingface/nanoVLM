@@ -133,12 +133,9 @@ def train(train_cfg, vlm_cfg):
 
     # Initialize model
     if train_cfg.resume_from_vlm_checkpoint:
-        model = VisionLanguageModel(vlm_cfg)
-        model.load_checkpoint(vlm_cfg.vlm_checkpoint_path)
-    elif vlm_cfg.vlm_load_backbone_weights:
-        model = VisionLanguageModel.from_pretrained(vlm_cfg)
+        model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
     else:
-        model = VisionLanguageModel(vlm_cfg)
+        model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
     
     # Only print model information on the main process
     if accelerator.is_main_process:
@@ -207,9 +204,11 @@ def train(train_cfg, vlm_cfg):
                 epoch_accuracy = test_mmstar(model, tokenizer, test_loader, accelerator.device)
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
+
                     # Using accelerator's unwrap_model to get the original model before saving
                     unwrapped_model = accelerator.unwrap_model(model)
                     accelerator.save(unwrapped_model.state_dict(), vlm_cfg.vlm_checkpoint_path)
+
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f} | Saving checkpoint to {vlm_cfg.vlm_checkpoint_path}")
                 else:
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")

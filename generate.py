@@ -3,8 +3,8 @@ from PIL import Image
 from huggingface_hub import hf_hub_download
 from accelerate import Accelerator
 
-from models.vision_language_model import VisionLanguageModel
 from models.config import VLMConfig
+from models.vision_language_model import VisionLanguageModel
 from data.processors import get_tokenizer, get_image_processor
 
 torch.manual_seed(0)
@@ -22,6 +22,7 @@ model = VisionLanguageModel(cfg)
 model.load_checkpoint(path_to_hf_file)
 # Prepare model with accelerator
 model = accelerator.prepare(model)
+
 model.eval()
 
 tokenizer = get_tokenizer(cfg.lm_tokenizer)
