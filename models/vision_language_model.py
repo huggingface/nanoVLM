@@ -14,7 +14,9 @@ class VisionLanguageModel(nn.Module):
         self.decoder = LanguageModel(cfg)
         self.MP = ModalityProjector(cfg)
 
-    def forward(self, input_ids, image, attention_mask=None, targets=None):
+    def forward(self, input_ids, image, attention_mask=None, targets=None, labels=None):
+        if labels is not None and targets is not None:
+            raise ValueError("Both labels and targets are provided. Please provide only one of them.")
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
 
@@ -35,12 +37,16 @@ class VisionLanguageModel(nn.Module):
         logits = self.decoder(combined_embd, attention_mask) # Not logits yet, but easier to return like this
 
         loss = None
+        targets = targets if targets is not None else labels
         if targets is not None:
             # Only use the token part of the logits for loss computation
             logits = self.decoder.head(logits)
             logits = logits[:, image_embd.size(1):, :]
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
-
+            # switch indicies to match the trainer api implementation
+            # https://github.com/huggingface/transformers/blob/06c16de3d3971e125232c2682ec99d282bb1a27d/src/transformers/trainer.py#L3835
+            if labels is not None : 
+                return loss, logits
         return logits, loss
 
     @torch.no_grad()
