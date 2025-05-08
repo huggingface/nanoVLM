@@ -21,7 +21,7 @@ class VQACollator(object):  # Visual Question Answering Collator
         encoded_full_sequences = self.tokenizer.batch_encode_plus(
             input_sequences,
             padding="max_length",
-            padding_side="left",
+            padding_side="right",
             return_tensors="pt",
             truncation=True,
             max_length=self.max_length,
@@ -35,7 +35,7 @@ class VQACollator(object):  # Visual Question Answering Collator
         labels[:, -1] = -100 #self.tokenizer.pad_token_id
 
         # The tokenizer has different behavior for padding and truncation:
-        # 1. If the full text (answer + question) is shorter than the max length, its gets padded on the left
+        # 1. If the full text (answer + question) is shorter than the max length, its gets padded on the right
         # 2. If the full text is longer than the max length, it gets truncated on the right
         # Therefore, I need to handle multipe cases, this is the different scenarios:
         # If the full text is longer than the max lenght, we need to set the labels to -100 for the whole sample (we want to ignore the whole sample)
@@ -56,14 +56,15 @@ class VQACollator(object):  # Visual Question Answering Collator
                 continue
             
             # Case 2: Sequence fits within max_length
-            # Use attention mask to find first non-padding token
-            # The first 1 in the attention mask marks the first non-padding token
-            first_token_pos = attention_mask[i].nonzero(as_tuple=True)[0][0].item()
-            
-            # Set labels for padding and question part to -100 (don't predict these), substracting 1 to account for the left shift
-            question_end = first_token_pos + question_length - 1 
+            # Set labels for question part to -100 (don't predict these), substracting 1 to account for the left shift
+            question_end = question_length - 1 
             labels[i, :question_end] = -100
 
+            # use input_ids to find where the eos_token is, we'll mask everything after that
+            # as the extra eos_tokens after the final eos_token act as pad tokens.
+            eos_token_pos = torch.where(input_ids[i]==0)[0][0].item()
+            labels[i, eos_token_pos:] = -100
+            
         return {
             "image": images,
             "input_ids": input_ids,
@@ -86,14 +87,14 @@ class MMStarCollator(object):  # https://huggingface.co/datasets/Lin-Chen/MMStar
         encoded_question_sequences = self.tokenizer.batch_encode_plus(
             questions,
             padding=True,
-            padding_side="left",
+            padding_side="right",
             return_tensors="pt"
         )
 
         encoded_answer_sequences = self.tokenizer.batch_encode_plus(
             answers,
             padding=True,
-            padding_side="left",
+            padding_side="right",
             return_tensors="pt"
         )
         
