@@ -126,8 +126,10 @@ def train(train_cfg, vlm_cfg):
     # Initialize model
     if train_cfg.resume_from_vlm_checkpoint:
         model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
+    elif train_cfg.vlm_load_backbone_weights:
+        model = VisionLanguageModel(vlm_cfg, load_backbone=True) # load backbones
     else:
-        model = VisionLanguageModel(vlm_cfg)
+        model = VisionLanguageModel(vlm_cfg, load_backbone=False) # randomly initialized model
     
     print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
     print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size}")
