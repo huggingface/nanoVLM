@@ -88,7 +88,7 @@ class ViTMultiHeadAttention(nn.Module):
             attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             attn = F.softmax(attn, dim=-1)
             attn = self.attn_dropout(attn)
-            y = attn @ v  # (B, n_heads, T, head_dim) x (B, n_heads, head_dim, T) -> (B, n_heads, T, head_dim)
+            y = attn @ v  # (B, n_heads, T, T) x (B, n_heads, T, head_dim) -> (B, n_heads, T, head_dim)
         
         # Transpose back from [B, n_heads, T, head_dim] to [B, T, n_heads * head_dim] and combine all heads to [B, T, C]
         y = y.transpose(1, 2).contiguous().view(B, T, C)  

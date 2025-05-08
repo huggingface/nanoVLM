@@ -18,11 +18,12 @@ Using the [`SigLIP-B/16-224-85M`](https://huggingface.co/google/siglip-base-patc
 
 ![loss](assets/nanoVLM-222M-loss.png)
 
-It is therefore a simple but yet powerful platform to get started with VLMs. Perfect to tinker around with different setups and setting, to explore the capabilities and efficiencies of small VLMs!
+It is therefore a simple yet powerful platform to get started with VLMs. Perfect to tinker around with different setups and settings, to explore the capabilities and efficiencies of small VLMs!
 
 ## Quick Start
 
 You can either clone the repository, setup an environement and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
+
 
 ## Environment Setup
 
@@ -39,12 +40,12 @@ If you want to use `uv`:
 uv init --bare
 uv sync --python 3.12
 source .venv/bin/activate
-uv add torch numpy torchvision pillow datasets huggingface-hub transformers
+uv add torch numpy torchvision pillow datasets huggingface-hub transformers wandb
 ```
 
 If you prefer another environment manager, simply install these packages:  
 ```bash
-pip install torch numpy torchvision pillow datasets huggingface-hub transformers
+pip install torch numpy torchvision pillow datasets huggingface-hub transformers wandb
 ```
 Dependencies: 
 - `torch` <3
@@ -53,11 +54,13 @@ Dependencies:
 - `pillow` for image loading
 - `datasets` for the training datasets
 - `huggingface-hub` & `transformers` to load the pretrained backbones
+- `wandb` for logging
 
 ## Training
 
 To train nanoVLM, you can simply use the provided training script
 ```bash
+wandb login --relogin
 python train.py
 ```
 which will use the default `models/config.py`.
