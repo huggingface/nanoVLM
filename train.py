@@ -6,6 +6,7 @@ import torch.optim as optim
 from dataclasses import asdict
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader
+from accelerate import Accelerator
 
 from data.collators import VQACollator, MMStarCollator
 from data.datasets import MMStarDataset, VQADataset
@@ -84,10 +85,10 @@ def test_mmstar(model, tokenizer, test_loader, device):
     correct_predictions = 0
     with torch.no_grad():
         for batch in test_loader:
-            image = batch['images'].to(device)
-            input_ids = batch['input_ids'].to(device)
-            labels = batch['labels'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
+            image = batch['images']
+            input_ids = batch['input_ids']
+            labels = batch['labels']
+            attention_mask = batch['attention_mask']
             
             correct_answer = tokenizer.batch_decode(labels, skip_special_tokens=True)
             
@@ -105,11 +106,18 @@ def test_mmstar(model, tokenizer, test_loader, device):
     return accuracy
 
 def train(train_cfg, vlm_cfg):
+    # Initialize accelerator
+    accelerator = Accelerator(
+        mixed_precision="bf16" if torch.cuda.is_available() else "no",
+        gradient_accumulation_steps=1
+    )
+    
     train_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer)
 
+    # Logging setup
     total_dataset_size = len(train_loader.dataset)
-    if train_cfg.log_wandb:
+    if train_cfg.log_wandb and accelerator.is_main_process:
         run_name = get_run_name(train_cfg)
         if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
@@ -132,8 +140,10 @@ def train(train_cfg, vlm_cfg):
     else:
         model = VisionLanguageModel(vlm_cfg)
     
-    print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
-    print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size}")
+    # Only print model information on the main process
+    if accelerator.is_main_process:
+        print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
+        print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size}")
 
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train the with the same learning rate
@@ -142,14 +152,19 @@ def train(train_cfg, vlm_cfg):
                     {'params': list(model.decoder.parameters()) + list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_backbones}]
     optimizer = optim.AdamW(param_groups)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    # Prepare model, optimizer and dataloaders with accelerator
+    model, optimizer, train_loader, test_loader = accelerator.prepare(
+        model, optimizer, train_loader, test_loader
+    )
+
+    # Compile model if requested (after preparing with accelerator)
     if train_cfg.compile:
         model = torch.compile(model)
 
     epoch_times = []
     best_accuracy = 0
     global_step = 0
+    
     for epoch in range(train_cfg.epochs):
         epoch_start_time = time.time()
         model.train()
@@ -158,47 +173,56 @@ def train(train_cfg, vlm_cfg):
 
         for batch in train_loader:
             batch_start_time = time.time()
-            images = batch["image"].to(device)
-            input_ids = batch["input_ids"].to(device)
-            labels = batch["labels"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            
+            images = batch["image"]
+            input_ids = batch["input_ids"]
+            labels = batch["labels"]
+            attention_mask = batch["attention_mask"]
 
-            optimizer.zero_grad()
-
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16ß
+            # Compute loss
+            with torch.autocast(device_type=accelerator.device.type, dtype=torch.bfloat16 if accelerator.mixed_precision == "bf16" else torch.float16): 
                 _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
-            loss.backward()
+            # Using accelerator for backward pass
+            accelerator.backward(loss)
+            
             optimizer.step()
+            optimizer.zero_grad()
 
-            batch_loss = loss.item()
+            # Gathering loss from all processes
+            batch_loss = accelerator.gather(loss).mean().item()
             total_train_loss += batch_loss
 
-            num_tokens = torch.sum(attention_mask).item() # Sum of attention mask gives number of tokens
-            num_tokens += images.shape[0] * ((images.shape[2] / vlm_cfg.vit_patch_size) ** 2) / (vlm_cfg.mp_pixel_shuffle_factor ** 2) # Add image tokens = batch_size * (((img_size / patch_size) ** 2) / (pixel_shuffle_factor ** 2))
+            # Token counting
+            num_tokens = torch.sum(attention_mask).item()
+            num_tokens += images.shape[0] * ((images.shape[2] / vlm_cfg.vit_patch_size) ** 2) / (vlm_cfg.mp_pixel_shuffle_factor ** 2)
             total_tokens_processed += num_tokens
 
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
             tokens_per_second = num_tokens / batch_duration
 
-            if train_cfg.eval_in_epochs and global_step % 100 == 0:
-                epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
+            # Only evaluate and log on the main process
+            if train_cfg.eval_in_epochs and global_step % 100 == 0 and accelerator.is_main_process:
+                epoch_accuracy = test_mmstar(model, tokenizer, test_loader, accelerator.device)
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
-                    torch.save(getattr(model, '_orig_mod', model).state_dict(), vlm_cfg.vlm_checkpoint_path)
+                    # Using accelerator's unwrap_model to get the original model before saving
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    accelerator.save(unwrapped_model.state_dict(), vlm_cfg.vlm_checkpoint_path)
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f} | Saving checkpoint to {vlm_cfg.vlm_checkpoint_path}")
                 else:
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                 if train_cfg.log_wandb:
                     run.log({"accuracy": epoch_accuracy}, step=global_step)
 
-            if train_cfg.log_wandb:
+            if train_cfg.log_wandb and accelerator.is_main_process:
                 run.log({"batch_loss": batch_loss,
                          "tokens_per_second": tokens_per_second}, step=global_step)
 
             global_step += 1
 
+        # Calculate average loss across all processes
         avg_train_loss = total_train_loss / len(train_loader)
 
         epoch_end_time = time.time()
@@ -207,29 +231,32 @@ def train(train_cfg, vlm_cfg):
 
         epoch_tokens_per_second = total_tokens_processed / epoch_duration
 
-        if train_cfg.log_wandb:
+        # Log only on main process
+        if train_cfg.log_wandb and accelerator.is_main_process:
             run.log({"epoch_loss": avg_train_loss,
                      "epoch_duration": epoch_duration,
                      "epoch_tokens_per_second": epoch_tokens_per_second})
 
-        print(f"Epoch {epoch+1}/{train_cfg.epochs}, Train Loss: {avg_train_loss:.4f} | Time: {epoch_duration:.2f}s | T/s: {epoch_tokens_per_second:.2f}")
+        if accelerator.is_main_process:
+            print(f"Epoch {epoch+1}/{train_cfg.epochs}, Train Loss: {avg_train_loss:.4f} | Time: {epoch_duration:.2f}s | T/s: {epoch_tokens_per_second:.2f}")
 
-    # Summary Statistics
-    avg_epoch_time = sum(epoch_times) / len(epoch_times)
-    total_training_time = sum(epoch_times)
-    total_samples_processed = len(train_loader.dataset) * train_cfg.epochs
-    avg_time_per_sample = total_training_time / total_samples_processed
-    print(f"Average time per epoch: {avg_epoch_time:.2f}s")
-    print(f"Average time per sample: {avg_time_per_sample:.4f}s")
+    # Summary Statistics 
+    if accelerator.is_main_process:
+        avg_epoch_time = sum(epoch_times) / len(epoch_times)
+        total_training_time = sum(epoch_times)
+        total_samples_processed = len(train_loader.dataset) * train_cfg.epochs
+        avg_time_per_sample = total_training_time / total_samples_processed
+        print(f"Average time per epoch: {avg_epoch_time:.2f}s")
+        print(f"Average time per sample: {avg_time_per_sample:.4f}s")
 
-    accuracy = test_mmstar(model, tokenizer, test_loader, device)
-    print(f"MMStar Accuracy: {accuracy:.4f}")
+        accuracy = test_mmstar(model, tokenizer, test_loader, accelerator.device)
+        print(f"MMStar Accuracy: {accuracy:.4f}")
 
-    if train_cfg.log_wandb:
-        run.summary["avg_epoch_time"] = avg_epoch_time
-        run.summary["avg_time_per_sample"] = avg_time_per_sample
-        run.summary["mmstar_acc"] = accuracy
-        run.finish()
+        if train_cfg.log_wandb:
+            run.summary["avg_epoch_time"] = avg_epoch_time
+            run.summary["avg_time_per_sample"] = avg_time_per_sample
+            run.summary["mmstar_acc"] = accuracy
+            run.finish()
 
 def main():
     parser = argparse.ArgumentParser()
