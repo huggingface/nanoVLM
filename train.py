@@ -7,7 +7,7 @@ from dataclasses import asdict
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader
 
-from data.collators import VAQCollator, MMStarCollator
+from data.collators import VQACollator, MMStarCollator
 from data.datasets import MMStarDataset, VQADataset
 from data.processors import get_image_processor, get_tokenizer
 from models.vision_language_model import VisionLanguageModel
@@ -54,7 +54,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
     test_dataset = MMStarDataset(test_ds['val'], tokenizer, image_processor)
 
     # Create collators
-    vqa_collator = VAQCollator(tokenizer, vlm_cfg.lm_max_length)
+    vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)
     mmstar_collator = MMStarCollator(tokenizer)
 
     # Create dataloaders
@@ -114,7 +114,7 @@ def train(train_cfg, vlm_cfg):
         if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
         run = wandb.init(
-            entity="huggingface",
+            entity=train_cfg.wandb_entity,
             project="nanoVLM",
             config={
                 "VLMConfig": asdict(vlm_cfg),
@@ -125,12 +125,9 @@ def train(train_cfg, vlm_cfg):
 
     # Initialize model
     if train_cfg.resume_from_vlm_checkpoint:
-        model = VisionLanguageModel(vlm_cfg)
-        model.load_checkpoint(vlm_cfg.vlm_checkpoint_path)
-    elif vlm_cfg.vlm_load_backbone_weights:
-        model = VisionLanguageModel.from_pretrained(vlm_cfg)
+        model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
     else:
-        model = VisionLanguageModel(vlm_cfg)
+        model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
     
     print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
     print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size}")
@@ -186,7 +183,7 @@ def train(train_cfg, vlm_cfg):
                 epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
-                    torch.save(getattr(model, '_orig_mod', model).state_dict(), vlm_cfg.vlm_checkpoint_path)
+                    model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f} | Saving checkpoint to {vlm_cfg.vlm_checkpoint_path}")
                 else:
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")

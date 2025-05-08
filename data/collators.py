@@ -1,6 +1,6 @@
 import torch
 
-class VAQCollator(object):  # Visual Question Answering Collator
+class VQACollator(object):  # Visual Question Answering Collator
     def __init__(self, tokenizer, max_length):
         self.tokenizer = tokenizer
         self.max_length = max_length

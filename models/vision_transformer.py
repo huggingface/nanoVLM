@@ -62,10 +62,10 @@ class ViTMultiHeadAttention(nn.Module):
         self.attn_dropout = nn.Dropout(self.dropout)
         self.resid_dropout = nn.Dropout(self.dropout)
 
-        # Use flash attention if available
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("Warning: Flash attention not available. Using standard attention in ViT.")
+        # Use scaled dot product attention if available
+        self.sdpa = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if not self.sdpa:
+            print("Warning: scaled dot product attention not available. Using standard attention in ViT.")
 
     def forward(self, x):
         B, T, C = x.size()
@@ -77,7 +77,7 @@ class ViTMultiHeadAttention(nn.Module):
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T, head_dim)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T, head_dim)
 
-        if self.flash:
+        if self.sdpa:
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v, 
                 attn_mask=None,
@@ -188,7 +188,6 @@ class ViT(nn.Module):
 
         sd = model.state_dict()
         
-
         mapping = {
             'vision_model.embeddings.patch_embedding.weight': 'patch_embedding.conv.weight',
             'vision_model.embeddings.patch_embedding.bias': 'patch_embedding.conv.bias',
