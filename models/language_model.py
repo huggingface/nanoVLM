@@ -291,7 +291,7 @@ class LanguageModel(nn.Module):
         
         # Store original HF vocab size before we modify it
         original_vocab_size = hf_config.vocab_size
-        print(f"Original vocabulary size from pretrained model: {original_vocab_size}")
+        # print(f"Original vocabulary size from pretrained model: {original_vocab_size}")
         
         # Configure model parameters from HF config
         cfg.lm_hidden_dim = hf_config.hidden_size
@@ -303,11 +303,11 @@ class LanguageModel(nn.Module):
         if hasattr(cfg, 'lm_vocab_size'):
             if cfg.lm_vocab_size < original_vocab_size:
                 raise ValueError(f"Config vocab size ({cfg.lm_vocab_size}) is smaller than pretrained model vocab size ({original_vocab_size})")
-            print(f"Using extended vocabulary size: {cfg.lm_vocab_size}")
+            # print(f"Using vocabulary size: {cfg.lm_vocab_size}")
         else:
             # If not specified, use the original
             cfg.lm_vocab_size = original_vocab_size
-            print(f"Using original vocabulary size: {cfg.lm_vocab_size}")
+            # print(f"Using original vocabulary size: {cfg.lm_vocab_size}")
         
         cfg.lm_n_heads = hf_config.num_attention_heads
         cfg.lm_n_kv_heads = hf_config.num_key_value_heads
@@ -395,7 +395,7 @@ class LanguageModel(nn.Module):
         # Handle weight tying (if needed)
         if cfg.lm_tie_weights and hasattr(model, 'head') and hasattr(model, 'token_embedding'):
             model.head.weight = model.token_embedding.weight
-            print("Tied token embedding and LM head weights")
+            # print("Tied token embedding and LM head weights")
         
         print(f"Successfully loaded {cfg.lm_model_type} weights from safetensors. Model has {sum(p.numel() for p in model.parameters()):,} parameters.")
         return model
