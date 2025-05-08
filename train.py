@@ -125,12 +125,9 @@ def train(train_cfg, vlm_cfg):
 
     # Initialize model
     if train_cfg.resume_from_vlm_checkpoint:
-        model = VisionLanguageModel(vlm_cfg)
-        model.load_checkpoint(vlm_cfg.vlm_checkpoint_path)
-    elif vlm_cfg.vlm_load_backbone_weights:
-        model = VisionLanguageModel.from_pretrained(vlm_cfg)
+        model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
     else:
-        model = VisionLanguageModel(vlm_cfg)
+        model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
     
     print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
     print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size}")
@@ -186,7 +183,7 @@ def train(train_cfg, vlm_cfg):
                 epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
-                    torch.save(getattr(model, '_orig_mod', model).state_dict(), vlm_cfg.vlm_checkpoint_path)
+                    model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f} | Saving checkpoint to {vlm_cfg.vlm_checkpoint_path}")
                 else:
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
