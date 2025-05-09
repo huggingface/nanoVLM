@@ -24,20 +24,26 @@ def measure_vram(args, vlm_cfg, train_cfg_defaults):
         return
 
     # --- Model Initialization ---
-    if args.vlm_checkpoint_path:
-        print(f"Loading model from specified checkpoint: {args.vlm_checkpoint_path}")
-        model = VisionLanguageModel.from_pretrained(args.vlm_checkpoint_path)
-    else:
-        print(f"Initializing a new model (no specific checkpoint path provided via CLI).")
-        print(f"Using VLMConfig defaults: load_backbone_weights={vlm_cfg.vlm_load_backbone_weights}")
-        model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
-    
-    model.to(device)
+    torch.cuda.reset_peak_memory_stats(device)
+    print(f"Using VLMConfig defaults: load_backbone_weights={vlm_cfg.vlm_load_backbone_weights}")
+    model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
+
     if args.compile:
         print("Compiling the model with torch.compile...")
         model = torch.compile(model)
         print("Model compiled.")
+        initial_vram_allocated_bytes = torch.cuda.memory_allocated(device)
+        initial_vram_allocated_mb = initial_vram_allocated_bytes / (1024 ** 2)
+        print(f"VRAM allocated after compiling model: {initial_vram_allocated_mb:.2f} MB")
     
+    model.to(device)
+
+    # Measure VRAM after model is loaded to device
+    torch.cuda.synchronize() # Ensure all operations are complete
+    initial_vram_allocated_bytes = torch.cuda.memory_allocated(device)
+    initial_vram_allocated_mb = initial_vram_allocated_bytes / (1024 ** 2)
+    print(f"VRAM allocated after loading model to device: {initial_vram_allocated_mb:.2f} MB")
+
     print(f"Model initialized with {sum(p.numel() for p in model.parameters()):,} parameters")
 
     # --- Dataset Preparation ---
@@ -98,7 +104,7 @@ def measure_vram(args, vlm_cfg, train_cfg_defaults):
             batch_size=bs,
             shuffle=False, 
             collate_fn=vqa_collator,
-            num_workers=args.num_workers,
+            num_workers=0,
             pin_memory=True,
             drop_last=True # Important if dataset size is not exactly multiple of bs
         )
@@ -131,7 +137,7 @@ def measure_vram(args, vlm_cfg, train_cfg_defaults):
 
                 optimizer.zero_grad(set_to_none=True)
 
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16): # Doing autocast to stay close the train.py script
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
                 
                 if loss is not None:
@@ -174,27 +180,19 @@ def main():
     parser = argparse.ArgumentParser(description="Measure VRAM usage for a VisionLanguageModel at different batch sizes.")
     
     # Model and Config args
-    parser.add_argument('--vlm_checkpoint_path', type=str, default=None, help='Path to the VLM checkpoint to load. If None, initializes a new model based on VLMConfig.')
     parser.add_argument('--compile', action='store_true', help='Compile the model with torch.compile.')
 
     # Measurement control args
     parser.add_argument('--batch_sizes', type=str, default="1 2 4", help='Space-separated list of batch sizes to test (e.g., "1 2 4 8").')
     parser.add_argument('--num_iterations', type=int, default=2, help='Number of forward/backward passes per batch size for VRAM measurement.')
-    parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for DataLoader. 0 is often best for precise VRAM measurement to avoid overhead.')
 
     args = parser.parse_args()
 
     vlm_cfg = config.VLMConfig()
     train_cfg_defaults = config.TrainConfig() # Used for default dataset path/name if not provided by CLI
 
-    # Update VLMConfig from CLI if needed (e.g. if more vlm_cfg options were added to parser)
-    # For now, only vlm_checkpoint_path directly influences model loading path.
-    # Other vlm_cfg settings (vit_img_size, lm_tokenizer etc.) are taken from models.config.VLMConfig()
-
     print("--- VLM Config (from models.config) ---")
     print(vlm_cfg) # Show base config
-    if args.vlm_checkpoint_path:
-        print(f"CLI override: vlm_checkpoint_path = {args.vlm_checkpoint_path}")
     print("--- Train Config Defaults (for dataset path/name if not specified via CLI) ---")
     print(f"Default dataset_path: {train_cfg_defaults.train_dataset_path}")
     print(f"Default dataset_name list: {train_cfg_defaults.train_dataset_name}")
