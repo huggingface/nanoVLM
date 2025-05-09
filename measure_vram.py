@@ -32,9 +32,6 @@ def measure_vram(args, vlm_cfg, train_cfg_defaults):
         print("Compiling the model with torch.compile...")
         model = torch.compile(model)
         print("Model compiled.")
-        initial_vram_allocated_bytes = torch.cuda.memory_allocated(device)
-        initial_vram_allocated_mb = initial_vram_allocated_bytes / (1024 ** 2)
-        print(f"VRAM allocated after compiling model: {initial_vram_allocated_mb:.2f} MB")
     
     model.to(device)
 
