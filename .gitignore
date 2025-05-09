@@ -22,3 +22,5 @@ uv.lock
 .DS_Store
 
 checkpoints/
+notebooks/
+*.slurm

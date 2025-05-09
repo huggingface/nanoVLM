@@ -46,7 +46,7 @@ class VQADataset(Dataset):  # Visual Question Answering Dataset
         # Add EOS token to the answer to train model to predict it, enabling correct stopping during generation
         answer = text['assistant'] + self.tokenizer.eos_token
 
-        formatted_text = f"Question: {question} Answer: "
+        formatted_text = f"Question: {question} Answer:"
 
         return {
             "image": processed_image,
@@ -82,7 +82,7 @@ class MMStarDataset(Dataset):  # https://huggingface.co/datasets/Lin-Chen/MMStar
         question = item['question']
         answer = item['answer'] + self.tokenizer.eos_token # Add EOS token to the answer to train model to predict it, enabling correct stopping during generation
         
-        formatted_text = f"Question: {question} \nAnswer only with the letter! \nAnswer: "
+        formatted_text = f"Question: {question} \nAnswer only with the letter! \nAnswer:"
         
         return {
             "image": processed_image,
