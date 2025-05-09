@@ -22,12 +22,12 @@ It is therefore a simple yet powerful platform to get started with VLMs. Perfect
 
 ## Quick Start
 
-You can either clone the repository, setup an environement and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
+You can either clone the repository, setup an environment and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
 
 
 ## Environment Setup
 
-We really like `uv` and recommend using it as your package manager. But feel free to use any one that you prefer.
+We really like `uv` and recommend using it as your package manager. But feel free to use whichever you prefer.
 
 Let's first clone the repository:
 ```bash
