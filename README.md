@@ -144,6 +144,7 @@ Understanding the VRAM requirements for training is crucial for selecting the ri
 Here's a breakdown of the approximate peak VRAM usage:
 
 ```
+VRAM allocated after loading model to device: 870.53 MB
 --- Summary of VRAM Usage (Default Model) ---
 Batch Size 1:   4439.02 MB
 Batch Size 2:   4461.05 MB
