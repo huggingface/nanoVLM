@@ -1,7 +1,7 @@
 import torch
 import argparse
 import torch.optim as optim
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset
 from torch.utils.data import DataLoader
 
 from data.collators import VQACollator
@@ -44,15 +44,9 @@ def measure_vram(args, vlm_cfg, train_cfg_defaults):
     image_processor = get_image_processor(vlm_cfg.vit_img_size)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer)
 
-    dataset_path = args.dataset_path if args.dataset_path else train_cfg_defaults.train_dataset_path
+    dataset_path = train_cfg_defaults.train_dataset_path
     # train_cfg_defaults.train_dataset_name is a list, use the first if not specified
-    dataset_name_default = train_cfg_defaults.train_dataset_name[0] if train_cfg_defaults.train_dataset_name else None
-    dataset_name = args.dataset_name if args.dataset_name else dataset_name_default
-
-    if not dataset_path or not dataset_name:
-        print("Error: Dataset path and name must be available (either via CLI args or TrainConfig defaults).")
-        print("Alternatively, modify script to use dummy data.")
-        return
+    dataset_name = train_cfg_defaults.train_dataset_name[0] if train_cfg_defaults.train_dataset_name else None
 
     batch_sizes_to_test = [int(bs) for bs in args.batch_sizes.split()]
     if not batch_sizes_to_test:
@@ -183,10 +177,6 @@ def main():
     parser.add_argument('--vlm_checkpoint_path', type=str, default=None, help='Path to the VLM checkpoint to load. If None, initializes a new model based on VLMConfig.')
     parser.add_argument('--compile', action='store_true', help='Compile the model with torch.compile.')
 
-    # Dataset args
-    parser.add_argument('--dataset_path', type=str, default=None, help='Path to the dataset (e.g., "HuggingFaceM4/VQAv2"). Overrides TrainConfig default.')
-    parser.add_argument('--dataset_name', type=str, default=None, help='Name of the dataset configuration. Overrides TrainConfig default.')
-    
     # Measurement control args
     parser.add_argument('--batch_sizes', type=str, default="1 2 4", help='Space-separated list of batch sizes to test (e.g., "1 2 4 8").')
     parser.add_argument('--num_iterations', type=int, default=2, help='Number of forward/backward passes per batch size for VRAM measurement.')

@@ -135,6 +135,54 @@ from models.vision_language_model import VisionLanguageModel
 model = VisionLanguageModel.from_pretrained("path/to/local/model")
 ```
 
+## VRAM Usage
+
+Understanding the VRAM requirements for training is crucial for selecting the right hardware and batch sizes. We've benchmarked the default `nanoVLM` model (222M parameters) on a single NVIDIA H100 GPU. Below is a summary of the peak VRAM usage observed for different batch sizes during training (including model, gradients, and optimizer states):
+
+<img src="assets/VRAM_Usage_vs_Batch_Size_nanoVLM.png" width="600" alt="VRAM Usage vs Batch Size">
+
+Here's a breakdown of the approximate peak VRAM usage:
+
+```
+--- Summary of VRAM Usage (Default Model) ---
+Batch Size 1:   4439.02 MB
+Batch Size 2:   4461.05 MB
+Batch Size 4:   4515.27 MB
+Batch Size 8:   5062.60 MB
+Batch Size 16:  6989.32 MB
+Batch Size 32:  10880.09 MB
+Batch Size 64:  18584.00 MB
+Batch Size 128: 34043.34 MB
+Batch Size 256: 64944.37 MB
+Batch Size 512: OOM (Peak before OOM: 80228.30 MB)
+```
+
+**Key Takeaways:**
+- You'll need at least ~4.5 GB of VRAM to train the default model even with a batch size of 1.
+- With approximately 8 GB of VRAM, you should be able to train with a batch size of up to 16.
+
+**Measure for Your Setup:**
+
+The values above are for the default model configuration. If you modify the model architecture (e.g., change backbones, hidden sizes) or use different sequence lengths, your VRAM requirements will change. 
+
+We provide a script `measure_vram.py` that allows you to test VRAM requirements on your specific machine and for your chosen model configuration and batch sizes. 
+
+To use it:
+1. Ensure you have a CUDA-enabled GPU and PyTorch installed.
+2. Run the script with your desired batch sizes. You can also specify a model checkpoint if you have one, or let it initialize a new model based on the default `VLMConfig`.
+
+```bash
+# Example: Test batch sizes 1, 2, 4, 8 with a new default model
+python measure_vram.py --batch_sizes "1 2 4 8"
+
+# Example: Test with a specific checkpoint and different batch sizes
+python measure_vram.py --vlm_checkpoint_path path/to/your/model.pth --batch_sizes "16 32 64"
+
+```
+
+This script will output the peak VRAM allocated for each batch size tested, helping you determine feasible training configurations for your hardware.
+
+
 ## Citation
 
 If you like the project and want to use it somewhere, please use this citation:
