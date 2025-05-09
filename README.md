@@ -200,6 +200,7 @@ Here are some areas we're looking to work on in the near future. Contributions i
 *   **Multi-gpu training:** Training on several GPUs
 *   **Multi-image support:** Training with several images
 *   **Image-splitting:** Enabling higher resolutions through image-splitting as done in SmolVLM.
+*   **VLMEvalKit:** Integration into [VLMEvalKit](https://github.com/open-compass/VLMEvalKit) to enable further benchmarks
 
 ## Citation
 
