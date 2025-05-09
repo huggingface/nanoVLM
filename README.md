@@ -184,6 +184,23 @@ python measure_vram.py --vlm_checkpoint_path path/to/your/model.pth --batch_size
 This script will output the peak VRAM allocated for each batch size tested, helping you determine feasible training configurations for your hardware.
 
 
+## Contributing
+
+We welcome contributions to nanoVLM! However, to maintain the repository's focus on simplicity and pure PyTorch, we have a few guidelines:
+
+*   **Pure PyTorch:** We aim to keep nanoVLM as a lightweight implementation in pure PyTorch. Contributions that introduce dependencies like `transformers.Trainer`, `accelerate`, or `deepspeed` will not be accepted.
+*   **New Features:** If you have an idea for a new feature, please open an issue first to discuss the scope and implementation details. This helps ensure that your contribution aligns with the project's goals.
+*   **Bug Fixes:** Feel free to submit pull requests for bug fixes.
+
+### Roadmap
+
+Here are some areas we're looking to work on in the near future. Contributions in these areas are particularly welcome:
+
+*   **Data Packing:** Implementing a way to create packs of a given size from the input data to optimize training.
+*   **Multi-gpu training:** Training on several GPUs
+*   **Multi-image support:** Training with several images
+*   **Image-splitting:** Enabling higher resolutions through image-splitting as done in SmolVLM.
+
 ## Citation
 
 If you like the project and want to use it somewhere, please use this citation:
