@@ -6,7 +6,12 @@ from data.processors import get_tokenizer, get_image_processor
 
 torch.manual_seed(0)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
 print(f"Using device: {device}")
 
 # Load model from the Hugging Face Hub or a local directory
