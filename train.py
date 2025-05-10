@@ -93,13 +93,11 @@ def get_dataloaders(train_cfg, vlm_cfg):
         train_dataset, 
         rank=get_rank(),
         num_replicas=get_world_size(),
-        shuffle = False,
     )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
-        shuffle = False,
         sampler=train_sampler,
         collate_fn=vqa_collator,
         num_workers=8,
@@ -280,14 +278,14 @@ def train(train_cfg, vlm_cfg):
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
 
-        # accuracy = test_mmstar(model, tokenizer, test_loader, device)
-        # print(f"MMStar Accuracy: {accuracy:.4f}")
+        accuracy = test_mmstar(model, tokenizer, test_loader, device)
+        print(f"MMStar Accuracy: {accuracy:.4f}")
 
-        # if train_cfg.log_wandb:
-        #     run.summary["avg_epoch_time"] = avg_epoch_time
-        #     run.summary["avg_time_per_sample"] = avg_time_per_sample
-        #     run.summary["mmstar_acc"] = accuracy
-        #     run.finish()
+        if train_cfg.log_wandb:
+            run.summary["avg_epoch_time"] = avg_epoch_time
+            run.summary["avg_time_per_sample"] = avg_time_per_sample
+            run.summary["mmstar_acc"] = accuracy
+            run.finish()
 
 def main():
     parser = argparse.ArgumentParser()
