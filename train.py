@@ -225,7 +225,11 @@ def train(train_cfg, vlm_cfg):
 
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
-            tokens_per_second = num_tokens / batch_duration * get_world_size()    # estimate tokens/s across all GPUs in DDP
+            tokens_per_second = num_tokens / batch_duration 
+
+            # gather loss and t/s from all ranks if DDP
+            batch_loss = mean(dist_gather(batch_loss)) if is_dist() else batch_loss  
+            tokens_per_second = sum(dist_gather(tokens_per_second)) if is_dist() else tokens_per_second  
 
             if train_cfg.eval_in_epochs and global_step % 100 == 0 and is_master():
                 epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
@@ -240,9 +244,6 @@ def train(train_cfg, vlm_cfg):
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                 if train_cfg.log_wandb and is_master():
                     run.log({"accuracy": epoch_accuracy}, step=global_step)
-
-            # gather average batch loss from all ranks if DDP
-            batch_loss = mean(dist_gather(batch_loss)) if is_dist() else batch_loss  
 
             if train_cfg.log_wandb and is_master():
                 run.log({"batch_loss": batch_loss,
