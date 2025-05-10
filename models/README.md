@@ -20,4 +20,4 @@ This is a simple MLP (Linear Layer) for the Modality Projection between the Imag
 
 ## Vision-Language-Model
 
-This brings all the individual parts together and handles the concatination of images and text. Built as a simple version of SmolVLM (https://arxiv.org/pdf/2504.05299)
+This brings all the individual parts together and handles the concatenation of images and text. Built as a simple version of SmolVLM (https://arxiv.org/pdf/2504.05299)

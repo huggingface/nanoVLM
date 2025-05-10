@@ -23,8 +23,8 @@ class ModalityProjector(nn.Module):
     def pixel_shuffle(self, x):
         bsz, seq, embed_dim = x.size()
         seq_root = int(seq**0.5)
-        assert seq_root**2 == seq # Sequence lenght must be a perfect square for pixel shuffle
-        assert seq_root % self.scale_factor == 0 # Sequence root must be dividible by scale factor
+        assert seq_root**2 == seq # Sequence length must be a perfect square for pixel shuffle
+        assert seq_root % self.scale_factor == 0 # Sequence root must be divisible by scale factor
 
         height = width = seq_root
         x = x.view(bsz, height, width, embed_dim)

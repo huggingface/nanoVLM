@@ -35,11 +35,11 @@ class VQACollator(object):  # Visual Question Answering Collator
         labels[:, -1] = -100 #self.tokenizer.pad_token_id
 
         # The tokenizer has different behavior for padding and truncation:
-        # 1. If the full text (answer + question) is shorter than the max length, its gets padded on the left
+        # 1. If the full text (answer + question) is shorter than the max length, it gets padded on the left
         # 2. If the full text is longer than the max length, it gets truncated on the right
-        # Therefore, I need to handle multipe cases, this is the different scenarios:
-        # If the full text is longer than the max lenght, we need to set the labels to -100 for the whole sample (we want to ignore the whole sample)
-        # If the full text is shorter than the max lenght, we need to set the labels to -100 only for the question part, and create causal language modeling labels for the answer part, taking into account the padding
+        # Therefore, I need to handle multiple cases, this is the different scenarios:
+        # If the full text is longer than the max length, we need to set the labels to -100 for the whole sample (we want to ignore the whole sample)
+        # If the full text is shorter than the max length, we need to set the labels to -100 only for the question part, and create causal language modeling labels for the answer part, taking into account the padding
 
         # Determine if sequences were truncated
         original_lengths = [len(self.tokenizer.encode(seq)) for seq in input_sequences]
