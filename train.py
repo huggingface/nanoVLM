@@ -171,7 +171,7 @@ def train(train_cfg, vlm_cfg):
     
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
-        print(f"Training summary {'(global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {len(train_loader)*get_world_size()} batches/epoch, batch size {train_cfg.batch_size*get_world_size()}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
+        print(f"Training summary{' (global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {len(train_loader)*get_world_size()} batches/epoch, batch size {train_cfg.batch_size*get_world_size()}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
 
         if is_dist():
             print(f"Training summary per GPU: {len(train_loader)} batches/epoch, batch size {train_loader.batch_size}")
