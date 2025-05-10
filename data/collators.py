@@ -1,6 +1,6 @@
 import torch
 
-class VAQCollator(object):  # Visual Question Answering Collator
+class VQACollator(object):  # Visual Question Answering Collator
     def __init__(self, tokenizer, max_length):
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -16,7 +16,7 @@ class VAQCollator(object):  # Visual Question Answering Collator
         # Create inputs by concatenating the question and answer
         input_sequences = []
         for i in range(len(texts)):
-            input_sequences.append(f"{texts[i]} {answers[i]}")
+            input_sequences.append(f"{texts[i]}{answers[i]}")
 
         encoded_full_sequences = self.tokenizer.batch_encode_plus(
             input_sequences,
@@ -63,6 +63,7 @@ class VAQCollator(object):  # Visual Question Answering Collator
             # Set labels for padding and question part to -100 (don't predict these), substracting 1 to account for the left shift
             question_end = first_token_pos + question_length - 1 
             labels[i, :question_end] = -100
+            # labels[i, original_lengths[i]-1:] = -100 # If you are using right padding
 
         return {
             "image": images,

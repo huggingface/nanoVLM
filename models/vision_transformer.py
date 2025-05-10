@@ -62,10 +62,10 @@ class ViTMultiHeadAttention(nn.Module):
         self.attn_dropout = nn.Dropout(self.dropout)
         self.resid_dropout = nn.Dropout(self.dropout)
 
-        # Use flash attention if available
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("Warning: Flash attention not available. Using standard attention in ViT.")
+        # Use scaled dot product attention if available
+        self.sdpa = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if not self.sdpa:
+            print("Warning: scaled dot product attention not available. Using standard attention in ViT.")
 
     def forward(self, x):
         B, T, C = x.size()
@@ -77,7 +77,7 @@ class ViTMultiHeadAttention(nn.Module):
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T, head_dim)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T, head_dim)
 
-        if self.flash:
+        if self.sdpa:
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v, 
                 attn_mask=None,
@@ -88,7 +88,7 @@ class ViTMultiHeadAttention(nn.Module):
             attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             attn = F.softmax(attn, dim=-1)
             attn = self.attn_dropout(attn)
-            y = attn @ v  # (B, n_heads, T, head_dim) x (B, n_heads, head_dim, T) -> (B, n_heads, T, head_dim)
+            y = attn @ v  # (B, n_heads, T, T) x (B, n_heads, T, head_dim) -> (B, n_heads, T, head_dim)
         
         # Transpose back from [B, n_heads, T, head_dim] to [B, T, n_heads * head_dim] and combine all heads to [B, T, C]
         y = y.transpose(1, 2).contiguous().view(B, T, C)  
@@ -188,7 +188,6 @@ class ViT(nn.Module):
 
         sd = model.state_dict()
         
-
         mapping = {
             'vision_model.embeddings.patch_embedding.weight': 'patch_embedding.conv.weight',
             'vision_model.embeddings.patch_embedding.bias': 'patch_embedding.conv.bias',
