@@ -3,6 +3,7 @@ import torch
 import wandb
 import argparse
 import torch.optim as optim
+from statistics import mean
 from dataclasses import asdict
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader, RandomSampler, DistributedSampler
@@ -41,6 +42,11 @@ def get_world_size():
 
 def get_rank():
     return dist.get_rank() if is_dist() else 0
+
+def dist_gather(o):
+    o_all = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(o_all, o)
+    return o_all
 
 def wrap_model(model):
     return DistributedDataParallel(model, device_ids=[dist.get_rank()])
@@ -86,12 +92,13 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_sampler = DistributedSampler(
         train_dataset, 
         rank=get_rank(),
-        num_replicas=get_world_size()
+        num_replicas=get_world_size(),
     )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size // get_world_size(),
+        shuffle = False,
         sampler=train_sampler,
         collate_fn=vqa_collator,
         num_workers=8,
@@ -165,7 +172,10 @@ def train(train_cfg, vlm_cfg):
     
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
-        print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size} {'(global), ' + str(get_world_size()) + ' devices, batch size per device: ' + str(train_loader.batch_size) if is_dist() and get_world_size() > 1 else ''}")
+        print(f"Training summary {'(global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {len(train_loader)*get_world_size()} batches/epoch, batch size {train_cfg.batch_size}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
+
+        if is_dist():
+            print(f"Training summary per GPU: {len(train_loader)} batches per epoch, batch size {train_loader.batch_size}")
 
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train the with the same learning rate
@@ -214,7 +224,7 @@ def train(train_cfg, vlm_cfg):
 
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
-            tokens_per_second = num_tokens / batch_duration
+            tokens_per_second = num_tokens / batch_duration * get_world_size()    # estimate tokens/s across all GPUs in DDP
 
             if train_cfg.eval_in_epochs and global_step % 100 == 0 and is_master():
                 epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
@@ -230,6 +240,9 @@ def train(train_cfg, vlm_cfg):
                 if train_cfg.log_wandb and is_master():
                     run.log({"accuracy": epoch_accuracy}, step=global_step)
 
+            # gather average batch loss from all ranks if DDP
+            batch_loss = mean(dist_gather(batch_loss)) if is_dist() else batch_loss  
+
             if train_cfg.log_wandb and is_master():
                 run.log({"batch_loss": batch_loss,
                          "tokens_per_second": tokens_per_second}, step=global_step)
@@ -237,11 +250,15 @@ def train(train_cfg, vlm_cfg):
             global_step += 1
 
         avg_train_loss = total_train_loss / len(train_loader)
+        # gather average batch loss from all ranks if DDP
+        avg_train_loss = mean(dist_gather(avg_train_loss)) if is_dist() else avg_train_loss  
 
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         epoch_times.append(epoch_duration)
 
+        # gather and sum total_tokens_processed accross all ranks if DDP
+        total_tokens_processed = sum(dist_gather(total_tokens_processed)) if is_dist() else total_tokens_processed  
         epoch_tokens_per_second = total_tokens_processed / epoch_duration
 
         if is_master():
@@ -256,19 +273,19 @@ def train(train_cfg, vlm_cfg):
     if is_master():
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         total_training_time = sum(epoch_times)
-        total_samples_processed = len(train_loader.dataset) * train_cfg.epochs
+        total_samples_processed = len(train_loader.dataset) * get_world_size() * train_cfg.epochs
         avg_time_per_sample = total_training_time / total_samples_processed
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
 
-        accuracy = test_mmstar(model, tokenizer, test_loader, device)
-        print(f"MMStar Accuracy: {accuracy:.4f}")
+        # accuracy = test_mmstar(model, tokenizer, test_loader, device)
+        # print(f"MMStar Accuracy: {accuracy:.4f}")
 
-        if train_cfg.log_wandb:
-            run.summary["avg_epoch_time"] = avg_epoch_time
-            run.summary["avg_time_per_sample"] = avg_time_per_sample
-            run.summary["mmstar_acc"] = accuracy
-            run.finish()
+        # if train_cfg.log_wandb:
+        #     run.summary["avg_epoch_time"] = avg_epoch_time
+        #     run.summary["avg_time_per_sample"] = avg_time_per_sample
+        #     run.summary["mmstar_acc"] = accuracy
+        #     run.finish()
 
 def main():
     parser = argparse.ArgumentParser()
