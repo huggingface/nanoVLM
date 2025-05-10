@@ -313,8 +313,6 @@ def main():
 
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         init_dist()
-        if is_master():
-            print(f"--- DDP Training Run (world size: {dist.get_world_size()}) ---")
 
     if is_master():
         print("--- VLM Config ---")
