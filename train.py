@@ -274,8 +274,7 @@ def train(train_cfg, vlm_cfg):
     if is_master():
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         total_training_time = sum(epoch_times)
-        # FIX THIS!
-        total_samples_processed = len(train_loader.dataset) * get_world_size() * train_cfg.epochs
+        total_samples_processed = len(train_loader.dataset) * train_cfg.epochs
         avg_time_per_sample = total_training_time / total_samples_processed
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
