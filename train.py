@@ -93,11 +93,12 @@ def get_dataloaders(train_cfg, vlm_cfg):
         train_dataset, 
         rank=get_rank(),
         num_replicas=get_world_size(),
+        shuffle = False,
     )
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=train_cfg.batch_size // get_world_size(),
+        batch_size=train_cfg.batch_size,    # =per device BS in DDP
         shuffle = False,
         sampler=train_sampler,
         collate_fn=vqa_collator,
@@ -172,10 +173,10 @@ def train(train_cfg, vlm_cfg):
     
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
-        print(f"Training summary {'(global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {len(train_loader)*get_world_size()} batches/epoch, batch size {train_cfg.batch_size}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
+        print(f"Training summary {'(global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {len(train_loader)*get_world_size()} batches/epoch, batch size {train_cfg.batch_size*get_world_size()}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
 
         if is_dist():
-            print(f"Training summary per GPU: {len(train_loader)} batches per epoch, batch size {train_loader.batch_size}")
+            print(f"Training summary per GPU: {len(train_loader)} batches/epoch, batch size {train_loader.batch_size}")
 
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train the with the same learning rate
@@ -273,6 +274,7 @@ def train(train_cfg, vlm_cfg):
     if is_master():
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         total_training_time = sum(epoch_times)
+        # FIX THIS!
         total_samples_processed = len(train_loader.dataset) * get_world_size() * train_cfg.epochs
         avg_time_per_sample = total_training_time / total_samples_processed
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
