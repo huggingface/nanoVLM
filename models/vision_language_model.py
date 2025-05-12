@@ -117,7 +117,7 @@ class VisionLanguageModel(nn.Module):
                 first_token_generated_time = time.perf_counter()
                 ttft = first_token_generated_time - prefill_and_first_token_start_time
             
-            generated_tokens_output[:, i] = next_token.squeeze(-1)
+            generated_tokens[:, i] = next_token.squeeze(-1)
             # Convert to embedding and append
             next_embd = self.decoder.token_embedding(next_token)
             outputs = torch.cat((outputs, next_embd), dim=1)
@@ -134,7 +134,7 @@ class VisionLanguageModel(nn.Module):
         overall_end_time = time.perf_counter()
         timings['total_generation_time'] = overall_end_time - overall_start_time
 
-        return generated_tokens_output, timings
+        return generated_tokens, timings
 
     @classmethod
     def from_pretrained(
