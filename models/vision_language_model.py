@@ -3,7 +3,7 @@ import os
 import tempfile
 from dataclasses import asdict
 from typing import Optional
-
+import time
 
 from models.vision_transformer import ViT
 from models.language_model import LanguageModel
@@ -60,10 +60,16 @@ class VisionLanguageModel(nn.Module):
 
     @torch.no_grad()
     def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5):
-        # Process image through vision encoder and projection
+        
+        timings = {}
+        overall_start_time = time.perf_counter()
+        #time the vision encoder and process image via encoder and projection
+        vision_processing_start_time = time.perf_counter()
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
-        
+        vision_processing_end_time = time.perf_counter()
+        timings['vision_encoder_time'] = vision_processing_end_time - vision_processing_start_time
+
         # Embed initial tokens
         token_embd = self.decoder.token_embedding(input_ids)
         
@@ -85,21 +91,33 @@ class VisionLanguageModel(nn.Module):
         generated_tokens = torch.zeros((batch_size, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
         
         #Note: Here you could implement improvements like e.g. KV caching
+        # Timing of language modelling loop
+        prefill_and_first_token_start_time = time.perf_counter()
+        ttft = None
+        lm_total_time = 0.0
+
         for i in range(max_new_tokens):
-            model_out = self.decoder(outputs, attention_mask)
+            loop_iteration_start_time = time.perf_counter()
             
+            # Language model processing for the current step
+            lm_step_start_time = time.perf_counter()
+            model_out = self.decoder(outputs, attention_mask)
+            lm_step_end_time = time.perf_counter()
+            lm_total_time += (lm_step_end_time - lm_step_start_time)
             # Get predictions for the last token only (normally this is the embedding, not the logits)
             last_token_logits = model_out[:, -1, :]
-            
-            # Apply head to get logits (if model is in embedding mode)
-            if not self.decoder.lm_use_tokens:
+            if not self.decoder.lm_use_tokens: # Apply head to get logits (if model is in embedding mode)
                 last_token_logits = self.decoder.head(last_token_logits)
-
+            
             probs = torch.softmax(last_token_logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
-                
-            generated_tokens[:, i] = next_token.squeeze(-1)
             
+            # Record TTFT after the first token is determined
+            if i == 0:
+                first_token_generated_time = time.perf_counter()
+                ttft = first_token_generated_time - prefill_and_first_token_start_time
+            
+            generated_tokens_output[:, i] = next_token.squeeze(-1)
             # Convert to embedding and append
             next_embd = self.decoder.token_embedding(next_token)
             outputs = torch.cat((outputs, next_embd), dim=1)
@@ -107,7 +125,16 @@ class VisionLanguageModel(nn.Module):
             if attention_mask is not None:
                 attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device)), dim=1)
         
-        return generated_tokens
+        timings['ttft'] = ttft
+        timings['language_model_time'] = lm_total_time # Time spent in LM decoder loop
+        timings['num_generated_tokens'] = max_new_tokens
+
+            
+        
+        overall_end_time = time.perf_counter()
+        timings['total_generation_time'] = overall_end_time - overall_start_time
+
+        return generated_tokens_output, timings
 
     @classmethod
     def from_pretrained(
