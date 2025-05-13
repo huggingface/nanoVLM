@@ -28,9 +28,6 @@ class VLMConfig:
     lm_max_length: int = 128 - 49  # Deduct the image token lenght to achieve a 'nice number'
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embeding weights
-    lm_rope_factor: float = 0.7
-    lm_beta_fast: int = 32
-    lm_beta_slow: int = 1
     lm_model_type: str = 'HuggingFaceTB/SmolLM2-135M'
     lm_tokenizer: str = 'HuggingFaceTB/cosmo2-tokenizer'
     lm_eos_token_id: int = 0
