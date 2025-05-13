@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict
 from typing import Optional
 
@@ -59,7 +60,29 @@ class VisionLanguageModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5):
+    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, 
+                 return_tps_metrics=False, tps_tracker=None, warm_up_iterations=0,
+                 discard_warm_up_tokens=False):
+        if return_tps_metrics and tps_tracker is None:
+            import sys
+            sys.path.append('.')
+            from utils.metrics import TPSTracker
+            tps_tracker = TPSTracker(self)
+            
+        if warm_up_iterations > 0:
+            for _ in range(warm_up_iterations):
+                # Run a quick generation to warm up the model
+                self._generate_internal(
+                    input_ids.clone(), image, attention_mask, 
+                    max_new_tokens=min(5, max_new_tokens),  # Use smaller tokens for warm-up
+                    tps_tracker=None  # No tracking during warm-up
+                )
+        if tps_tracker is not None:
+            tps_tracker.start()
+            
+        # Track input token processing time
+        input_start_time = time.perf_counter()
+            
         # Process image through vision encoder and projection
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
@@ -67,6 +90,11 @@ class VisionLanguageModel(nn.Module):
         # Embed initial tokens
         token_embd = self.decoder.token_embedding(input_ids)
         
+        # Log input tokens processing for TPS tracking
+        if tps_tracker is not None:
+            input_tokens = input_ids.size(1)
+            tps_tracker.log_token(input_tokens, is_input=True)
+                
         # Concatenate image embeddings with token embeddings
         combined_embd = torch.cat((image_embd, token_embd), dim=1)
 
@@ -106,7 +134,62 @@ class VisionLanguageModel(nn.Module):
 
             if attention_mask is not None:
                 attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device)), dim=1)
+            
+            # Log token generation for TPS tracking
+            if tps_tracker is not None:
+                # For the first generated token, explicitly log it as the first token
+                if i == 0:
+                    tps_tracker.log_first_token()
+                
+                # Log each token individually as an output token for accurate per-token timing
+                tps_tracker.log_token(1, is_input=False)
+                tps_tracker.log_step()
         
+        # Finalize TPS metrics if requested
+        if tps_tracker is not None:
+            tps_tracker.stop()
+            metrics = tps_tracker.get_metrics(
+                discard_first_n_tokens=1 if discard_warm_up_tokens else 0
+            )
+            return generated_tokens, metrics
+            
+        return generated_tokens
+        
+    def _generate_internal(self, input_ids, image, attention_mask=None, max_new_tokens=5, tps_tracker=None):
+        """Internal generation method for warm-up runs"""
+        image_embd = self.vision_encoder(image)
+        image_embd = self.MP(image_embd)
+        
+        token_embd = self.decoder.token_embedding(input_ids)
+        
+        combined_embd = torch.cat((image_embd, token_embd), dim=1)
+
+        batch_size = image_embd.size(0)
+        img_seq_len = image_embd.size(1)
+        if attention_mask is not None:
+            image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
+            attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
+        
+        outputs = combined_embd
+        generated_tokens = torch.zeros((batch_size, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
+        
+        for i in range(max_new_tokens):
+            model_out = self.decoder(outputs, attention_mask)
+            last_token_logits = model_out[:, -1, :]
+            
+            if not self.decoder.lm_use_tokens:
+                last_token_logits = self.decoder.head(last_token_logits)
+
+            probs = torch.softmax(last_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            generated_tokens[:, i] = next_token.squeeze(-1)
+            
+            next_embd = self.decoder.token_embedding(next_token)
+            outputs = torch.cat((outputs, next_embd), dim=1)
+
+            if attention_mask is not None:
+                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device)), dim=1)
+                
         return generated_tokens
 
     @classmethod

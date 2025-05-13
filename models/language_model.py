@@ -1,4 +1,5 @@
 import math
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -279,14 +280,40 @@ class LanguageModel(nn.Module):
         return x
 
     @torch.no_grad()
-    def generate(self, inputs, max_new_tokens=20):
-        # Add batch dimension if needed
+    def generate(self, inputs, max_new_tokens=20, return_tps_metrics=False, tps_tracker=None,
+                 warm_up_iterations=0, discard_warm_up_tokens=False):
+        # Set up TPS tracking if requested
+        if return_tps_metrics and tps_tracker is None:
+            import sys
+            sys.path.append('.')
+            try:
+                from utils.metrics import TPSTracker
+                tps_tracker = TPSTracker(self)
+            except ImportError:
+                print("Warning: utils.metrics.TPSTracker not found. TPS metrics will not be returned.")
+                return_tps_metrics = False
+        
+        if warm_up_iterations > 0:
+            for _ in range(warm_up_iterations):
+                # Run a quick generation to warm up the model
+                self._generate_internal(
+                    inputs.clone() if torch.is_tensor(inputs) else inputs,
+                    max_new_tokens=min(5, max_new_tokens)  # Use smaller tokens for warm-up
+                )
+        
+        if tps_tracker is not None:
+            tps_tracker.start()
+            
         if inputs.dim() == 1:
             inputs = inputs.unsqueeze(0)
             
+        if tps_tracker is not None:
+            input_tokens = inputs.size(1)
+            tps_tracker.log_token(input_tokens, is_input=True)
+            
         generated = inputs.clone()
         
-        for _ in range(max_new_tokens):
+        for i in range(max_new_tokens):
             # Forward pass through the model
             outputs = self.forward(generated)
             last_output = outputs[:, -1, :]
@@ -300,8 +327,43 @@ class LanguageModel(nn.Module):
                 next_token_embedding = last_output.unsqueeze(1)  # Shape: [batch_size, 1, hidden_dim]
                 generated = torch.cat((generated, next_token_embedding), dim=1)
             
+            if tps_tracker is not None:
+                # For the first generated token, explicitly log it as the first token
+                if i == 0:
+                    tps_tracker.log_first_token()
+                
+                tps_tracker.log_token(1, is_input=False)
+                tps_tracker.log_step()
+            
             #Note: You could enable the generation to break earlier than max_new_tokens when it detects a eos token, but this does not work in batched generation (output tensors need to have the same size)
     
+        if tps_tracker is not None:
+            tps_tracker.stop()
+            metrics = tps_tracker.get_metrics(
+                discard_first_n_tokens=1 if discard_warm_up_tokens else 0
+            )
+            return generated, metrics
+            
+        return generated
+        
+    def _generate_internal(self, inputs, max_new_tokens=5):
+        """Internal generation method for warm-up runs"""
+        if isinstance(inputs, torch.Tensor) and inputs.dim() == 1:
+            inputs = inputs.unsqueeze(0)
+            
+        generated = inputs.clone() if torch.is_tensor(inputs) else inputs
+        
+        for i in range(max_new_tokens):
+            outputs = self.forward(generated)
+            last_output = outputs[:, -1, :]
+
+            if self.lm_use_tokens:
+                next_token = torch.argmax(last_output, dim=-1, keepdim=True)
+                generated = torch.cat((generated, next_token), dim=-1)
+            else:
+                next_token_embedding = last_output.unsqueeze(1)
+                generated = torch.cat((generated, next_token_embedding), dim=1)
+                
         return generated
 
     # Load the model from a pretrained HuggingFace model (we don't want to have to train the Language Backbone from scratch)
