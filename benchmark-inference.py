@@ -56,14 +56,27 @@ if __name__ == "__main__":
     avg_vision_time = sum(t['vision_encoder_time'] for t in all_timings) / num_benchmark_runs
     avg_lm_time = sum(t['language_model_time'] for t in all_timings) / num_benchmark_runs
     
-    tps = max_new_tokens_to_generate / avg_total_gen_time
+   
+    total_actual_tokens_generated = sum(t.get('num_generated_tokens', 0) for t in all_timings)
+    total_model_internal_generation_time = sum(t.get('total_generation_time', 0) for t in all_timings)
 
+    tps = total_actual_tokens_generated / total_model_internal_generation_time if total_model_internal_generation_time > 0 else 0
+    
     print("\n--- Inference Performance Metrics ---")
     print(f"Number of benchmark runs: {num_benchmark_runs}")
-    print(f"Number of tokens generated per run: {max_new_tokens_to_generate}")
+    print(f"Requested max new tokens per run: {max_new_tokens_to_generate}")
+
+   
+    if num_benchmark_runs > 0 and all('num_generated_tokens' in t for t in all_timings):
+        avg_actual_tokens_per_run = total_actual_tokens_generated / num_benchmark_runs
+        
+        if abs(avg_actual_tokens_per_run - max_new_tokens_to_generate) > 1e-5 or \
+           avg_actual_tokens_per_run == max_new_tokens_to_generate: # Show if different or same for clarity
+             print(f"Average actual tokens generated per run (from model timings): {avg_actual_tokens_per_run:.2f}")
+
     print(f"Average total inference time (model internal): {avg_total_gen_time:.4f} seconds")
     print(f"Average total benchmark run time (end-to-end): {avg_benchmark_run_total_time:.4f} seconds")
-    print(f"Tokens Per Second (TPS, based on model internal time): {tps:.2f}")
+    print(f"Tokens Per Second (TPS, based on model internal time and actual tokens): {tps:.2f}")
     print(f"Time to First Token (TTFT) / Prefill Time: {avg_ttft:.4f} seconds")
     print("Fine-Grained VLM Speed Analysis (average per run):")
     print(f"  Time in Vision Encoder: {avg_vision_time:.4f} seconds")
