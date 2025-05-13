@@ -17,8 +17,8 @@ class RMSNorm(nn.Module):
 
         return x
 
-# Rotary Embedding with dynamic frequency scaling for long sequence generalization.
-# Applies linear ramp-based correction in frequency space beyond a context threshold (DeepSeek-style).
+# Multiple derivates of Rotary Embeddings by now, this is a basic one with linear scaling to context length
+# e.g. https://github.com/huggingface/smollm/blob/main/vision/m4/models/vllama3/modeling_vllama3.py#L190
 class RotaryEmbedding(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -27,51 +27,23 @@ class RotaryEmbedding(nn.Module):
         self.dim = cfg.lm_hidden_dim // cfg.lm_n_heads # dim of each head
         self.base = cfg.lm_re_base
         self.max_seq_len = cfg.lm_max_position_embeddings
-        self.factor =    cfg.lm_rope_factor
-        self.beta_fast = cfg.lm_beta_fast
-        self.beta_slow = cfg.lm_beta_slow
         # Standard RoPE implementation - create frequencies for each dimension
         # freq_i = 1 / (base^(2i/dim)) where i is the dimension index
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq)
         self.original_max_seq_len = cfg.lm_max_position_embeddings
         self.attention_scaling = cfg.lm_attn_scaling
-    
-    # Compute the dimension index where a given number of rotations fits in the max sequence length.
-    @staticmethod
-    def find_correction_dim(num_rotations, dim, base, max_seq_len):
-        return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
-    
-    # Identify the range of dimensions where frequency interpolation will be applied.
-    @staticmethod
-    def find_correction_range(low_rot, high_rot, dim, base, max_seq_len):
-
-        low = math.floor(RotaryEmbedding.find_correction_dim(low_rot, dim, base, max_seq_len))
-        high = math.ceil(RotaryEmbedding.find_correction_dim(high_rot, dim, base, max_seq_len))
-        return max(low, 0), min(high, dim-1)
-
-    # Create a smooth linear interpolation mask between two dimension indices.
-    @staticmethod
-    def linear_ramp_factor(min, max, dim):
-
-        if min == max:
-            max += 0.001
-        linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
-        ramp_func = torch.clamp(linear_func, 0, 1)
-        return ramp_func
-
 
     @torch.no_grad()
     def forward(self, position_ids):
         batch_size, seq_len = position_ids.shape
-        inv_freq = self.inv_freq
         # Dynamic scaling for longer sequences
         max_seq = position_ids.max() + 1
         if max_seq > self.original_max_seq_len:
-            low, high = RotaryEmbedding.find_correction_range(self.beta_fast, self.beta_slow, self.dim, self.base, self.max_seq_len)
-            smooth = 1 - RotaryEmbedding.linear_ramp_factor(low, high, self.dim // 2)
-            inv_freq = inv_freq / self.factor * (1 - smooth) + inv_freq * smooth
-
+            scale = max_seq / self.original_max_seq_len
+            inv_freq = self.inv_freq / scale
+        else:
+            inv_freq = self.inv_freq
             
         # Compute theta = position * frequency
         # Flatten position_ids for batch processing
