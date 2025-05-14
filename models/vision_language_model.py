@@ -17,9 +17,6 @@ from safetensors.torch import load_model, save_model
 
 class VisionLanguageModel(nn.Module):
     def __init__(self, cfg: VLMConfig, load_backbone=True):
-        torch.manual_seed(0)
-        torch.cuda.manual_seed_all(0)
-        
         super().__init__()
         self.cfg = cfg
         if load_backbone:

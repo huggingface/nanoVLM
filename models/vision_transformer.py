@@ -130,9 +130,6 @@ class ViTBlock(nn.Module):
 
 class ViT(nn.Module):
     def __init__(self, cfg):
-        torch.manual_seed(0)
-        torch.cuda.manual_seed_all(0)
-
         super().__init__()
         self.cfg = cfg
         self.patch_embedding = ViTPatchEmbeddings(cfg)

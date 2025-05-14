@@ -2,11 +2,16 @@ import math
 import time
 import torch
 import wandb
+import numpy
+import random
 import argparse
 import torch.optim as optim
 from dataclasses import asdict
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader
+
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
 
 from data.collators import VQACollator, MMStarCollator
 from data.datasets import MMStarDataset, VQADataset
@@ -18,9 +23,6 @@ import models.utils as utils
 #Otherwise, the tokenizer will through a warning
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-torch.manual_seed(0)
-torch.cuda.manual_seed_all(0)
 
 def get_run_name(train_cfg):
     dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
@@ -63,6 +65,14 @@ def get_dataloaders(train_cfg, vlm_cfg):
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)
     mmstar_collator = MMStarCollator(tokenizer)
 
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        numpy.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    g = torch.Generator()
+    g.manual_seed(0)
+
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
@@ -72,6 +82,8 @@ def get_dataloaders(train_cfg, vlm_cfg):
         num_workers=8,
         pin_memory=True,
         drop_last=True,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
 
     val_loader = DataLoader(
@@ -82,6 +94,8 @@ def get_dataloaders(train_cfg, vlm_cfg):
         num_workers=8,
         pin_memory=True,
         drop_last=True,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
 
     test_loader = DataLoader(
@@ -89,7 +103,9 @@ def get_dataloaders(train_cfg, vlm_cfg):
         batch_size=train_cfg.mmstar_batch_size, 
         shuffle=False, 
         collate_fn=mmstar_collator,
-        pin_memory=True
+        pin_memory=True,
+        worker_init_fn=seed_worker,
+        generator=g,
         )
 
     return train_loader, val_loader, test_loader
@@ -119,6 +135,8 @@ def test_mmstar(model, tokenizer, test_loader, device):
     accuracy = correct_predictions / total_examples if total_examples > 0 else 0
     return accuracy
 
+# Cosine learning rate schedule with warmup (from Karpathy)
+# https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L353
 def get_lr(it, max_lr, max_steps):
     min_lr = max_lr * 0.1
     warmup_steps = max_steps * 0.03
@@ -216,7 +234,7 @@ def train(train_cfg, vlm_cfg):
             batch_duration = batch_end_time - batch_start_time
             tokens_per_second = num_tokens / batch_duration
 
-            if train_cfg.eval_in_epochs and global_step % 100 == 0:
+            if train_cfg.eval_in_epochs and global_step % 250 == 0:
                 model.eval()
                 torch.cuda.empty_cache()  # Clear GPU memory
                 with torch.no_grad():
@@ -284,9 +302,6 @@ def train(train_cfg, vlm_cfg):
         run.finish()
 
 def main():
-    torch.manual_seed(0)
-    torch.cuda.manual_seed_all(0)
-    
     parser = argparse.ArgumentParser()
     parser.add_argument('--lr_mp', type=float, help='Learning rate for the mapping network')
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')

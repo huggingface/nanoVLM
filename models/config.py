@@ -43,7 +43,7 @@ class TrainConfig:
     lr_mp: float = 2e-3
     lr_backbones: float = 1e-4
     data_cutoff_idx: int = None
-    val_ratio: float = 0.05
+    val_ratio: float = 0.01
     batch_size: int = 256
     mmstar_batch_size: int = 32
     eval_in_epochs: bool = True

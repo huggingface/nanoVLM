@@ -2,6 +2,10 @@ import argparse
 import torch
 from PIL import Image
 
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
+
 from models.vision_language_model import VisionLanguageModel
 from data.processors import get_tokenizer, get_image_processor
 
@@ -30,7 +34,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    torch.manual_seed(0)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")

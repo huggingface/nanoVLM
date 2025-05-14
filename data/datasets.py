@@ -7,9 +7,6 @@ import models.config as cfg
 
 class VQADataset(Dataset):  # Visual Question Answering Dataset
     def __init__(self, dataset, tokenizer, image_processor):
-        torch.manual_seed(0)
-        torch.cuda.manual_seed_all(0)
-
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.image_processor = image_processor
@@ -60,9 +57,6 @@ class VQADataset(Dataset):  # Visual Question Answering Dataset
 
 class MMStarDataset(Dataset):  # https://huggingface.co/datasets/Lin-Chen/MMStar
     def __init__(self, dataset, tokenizer, image_processor):
-        torch.manual_seed(0)
-        torch.cuda.manual_seed_all(0)
-        
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.image_processor = image_processor
