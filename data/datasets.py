@@ -17,7 +17,7 @@ class VQADataset(Dataset):  # Visual Question Answering Dataset
     def __getitem__(self, idx):
         item = self.dataset[idx]
 
-        # Handle image (its a list)
+        # Handle image (it's a list)
         image_data = item['images']
         if isinstance(image_data, list) and len(image_data) > 0:
             image = image_data[0]
