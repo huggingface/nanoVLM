@@ -1,6 +1,5 @@
 # Modality Projection from Vision to Language
 import torch.nn as nn
-import torch
 
 class ModalityProjector(nn.Module):
     def __init__(self, cfg):

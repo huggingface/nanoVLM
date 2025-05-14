@@ -313,24 +313,17 @@ def main():
     vlm_cfg = config.VLMConfig()
     train_cfg = config.TrainConfig()
 
-    # Override config with args if provided
     if args.lr_mp is not None:
         train_cfg.lr_mp = args.lr_mp
     if args.lr_backbones is not None:
         train_cfg.lr_backbones = args.lr_backbones
-    if args.vlm_checkpoint_path is not None: # If user specifies a path, update the config
+    if args.vlm_checkpoint_path is not None:
         vlm_cfg.vlm_checkpoint_path = args.vlm_checkpoint_path
 
-    # Handle resumption logic based on the resume_from_vlm_checkpoint flag
-    if args.resume_from_vlm_checkpoint:
+    if args.resume_from_vlm_checkpoint and args.vlm_checkpoint_path is not None:
         train_cfg.resume_from_vlm_checkpoint = True
         # When resuming a full VLM, we don't need to load individual backbone weights from original sources
         vlm_cfg.vlm_load_backbone_weights = False
-    else:
-        # Not resuming from a VLM checkpoint.
-        # train_cfg.resume_from_vlm_checkpoint remains False (its default).
-        # vlm_cfg.vlm_load_backbone_weights remains True (its default), so new model loads pretrained backbones.
-        pass
 
     print("--- VLM Config ---")
     print(vlm_cfg)
