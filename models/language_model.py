@@ -204,6 +204,9 @@ class LanguageModelBlock(nn.Module):
 # https://github.com/meta-llama/llama3/blob/main/llama/model.py#L251
 class LanguageModel(nn.Module):
     def __init__(self, cfg):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        
         super().__init__()
         self.cfg = cfg
         self.lm_use_tokens = cfg.lm_use_tokens

@@ -1,8 +1,12 @@
 # Modality Projection from Vision to Language
 import torch.nn as nn
+import torch
 
 class ModalityProjector(nn.Module):
     def __init__(self, cfg):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+
         super().__init__()
         self.cfg = cfg
         self.input_dim = cfg.vit_hidden_dim * (cfg.mp_pixel_shuffle_factor**2)

@@ -2,6 +2,9 @@ import torch
 
 class VQACollator(object):  # Visual Question Answering Collator
     def __init__(self, tokenizer, max_length):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+
         self.tokenizer = tokenizer
         self.max_length = max_length
     
@@ -74,6 +77,9 @@ class VQACollator(object):  # Visual Question Answering Collator
 
 class MMStarCollator(object):  # https://huggingface.co/datasets/Lin-Chen/MMStar
     def __init__(self, tokenizer):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        
         self.tokenizer = tokenizer
     
     def __call__(self, batch):
