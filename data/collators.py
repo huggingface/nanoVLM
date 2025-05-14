@@ -73,7 +73,7 @@ class VQACollator(object):  # Visual Question Answering Collator
         }
 
 class MMStarCollator(object):  # https://huggingface.co/datasets/Lin-Chen/MMStar
-    def __init__(self, tokenizer):  
+    def __init__(self, tokenizer):
         self.tokenizer = tokenizer
     
     def __call__(self, batch):
