@@ -44,6 +44,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_ds = concatenate_datasets(combined_train_data)
     
     test_ds = load_dataset(train_cfg.test_dataset_path)
+    train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatinated datasets
 
     # Apply cutoff if specified
     if train_cfg.data_cutoff_idx is None:
@@ -51,7 +52,11 @@ def get_dataloaders(train_cfg, vlm_cfg):
     else:
         total_samples = min(len(train_ds), train_cfg.data_cutoff_idx)
 
-    train_dataset = VQADataset(train_ds.select(range(total_samples)), tokenizer, image_processor)
+    val_size = int(total_samples * train_cfg.val_ratio)
+    train_size = total_samples - val_size
+
+    train_dataset = VQADataset(train_ds.select(range(train_size)), tokenizer, image_processor)
+    val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor)
     test_dataset = MMStarDataset(test_ds['val'], tokenizer, image_processor)
 
     # Create collators
@@ -69,6 +74,16 @@ def get_dataloaders(train_cfg, vlm_cfg):
         drop_last=True,
     )
 
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=train_cfg.batch_size,
+        shuffle=False,
+        collate_fn=vqa_collator,
+        num_workers=8,
+        pin_memory=True,
+        drop_last=True,
+    )
+
     test_loader = DataLoader(
         test_dataset, 
         batch_size=train_cfg.mmstar_batch_size, 
@@ -77,7 +92,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
         pin_memory=True
         )
 
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 def test_mmstar(model, tokenizer, test_loader, device):
     model.eval()
@@ -100,9 +115,8 @@ def test_mmstar(model, tokenizer, test_loader, device):
             total_examples += len(is_correct)
             if is_correct:
                 correct_predictions += sum(is_correct)
-
+    model.train()
     accuracy = correct_predictions / total_examples if total_examples > 0 else 0
-
     return accuracy
 
 def get_lr(it, max_lr, max_steps):
@@ -121,7 +135,7 @@ def get_lr(it, max_lr, max_steps):
     return min_lr + coeff * (max_lr - min_lr)
 
 def train(train_cfg, vlm_cfg):
-    train_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
+    train_loader, val_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer)
 
     total_dataset_size = len(train_loader.dataset)
@@ -147,6 +161,7 @@ def train(train_cfg, vlm_cfg):
     
     print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
     print(f"Training summary: {len(train_loader.dataset)} samples, {len(train_loader)} batches/epoch, batch size {train_cfg.batch_size}")
+    print(f"Validation summary: {len(val_loader.dataset)} samples, {len(val_loader)} batches/epoch, batch size {train_cfg.batch_size}")
 
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train the with the same learning rate
@@ -202,15 +217,33 @@ def train(train_cfg, vlm_cfg):
             tokens_per_second = num_tokens / batch_duration
 
             if train_cfg.eval_in_epochs and global_step % 100 == 0:
-                epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
+                model.eval()
+                torch.cuda.empty_cache()  # Clear GPU memory
+                with torch.no_grad():
+                    epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
+                    total_val_loss = 0
+                    for batch in val_loader:
+                        images = batch["image"].to(device)
+                        input_ids = batch["input_ids"].to(device)
+                        labels = batch["labels"].to(device)
+                        attention_mask = batch["attention_mask"].to(device)
+
+                        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                            _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+
+                        total_val_loss += loss.item()
+                    avg_val_loss = total_val_loss / len(val_loader)
+                model.train()
+
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
                     model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
-                    print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f} | Saving checkpoint to {vlm_cfg.vlm_checkpoint_path}")
+                    print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Val Loss: {avg_val_loss:.4f}, Accuracy: {epoch_accuracy:.4f} | Saving checkpoint to {vlm_cfg.vlm_checkpoint_path}")
                 else:
-                    print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
+                    print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Val Loss: {avg_val_loss:.4f}, Accuracy: {epoch_accuracy:.4f}")
                 if train_cfg.log_wandb:
-                    run.log({"accuracy": epoch_accuracy}, step=global_step)
+                    run.log({"accuracy": epoch_accuracy,
+                             "val_loss": avg_val_loss}, step=global_step)
 
             if train_cfg.log_wandb:
                 run.log({"batch_loss": batch_loss,
