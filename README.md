@@ -22,12 +22,12 @@ It is therefore a simple yet powerful platform to get started with VLMs. Perfect
 
 ## Quick Start
 
-You can either clone the repository, setup an environement and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
+You can either clone the repository, setup an environment and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
 
 
 ## Environment Setup
 
-We really like `uv` and recommend using it as your package manager. But feel free to use any one that you prefer.
+We really like `uv` and recommend using it as your package manager. But feel free to use whichever you prefer.
 
 Let's first clone the repository:
 ```bash
@@ -37,7 +37,7 @@ cd nanoVLM
 
 If you want to use `uv`:
 ```bash
-uv init --bare
+uv init --bare --python 3.12
 uv sync --python 3.12
 source .venv/bin/activate
 uv add torch numpy torchvision pillow datasets huggingface-hub transformers wandb
@@ -200,6 +200,7 @@ Here are some areas we're looking to work on in the near future. Contributions i
 *   **Multi-gpu training:** Training on several GPUs
 *   **Multi-image support:** Training with several images
 *   **Image-splitting:** Enabling higher resolutions through image-splitting as done in SmolVLM.
+*   **VLMEvalKit:** Integration into [VLMEvalKit](https://github.com/open-compass/VLMEvalKit) to enable further benchmarks
 
 ## Citation
 

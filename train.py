@@ -1,6 +1,9 @@
+import math
 import time
 import torch
 import wandb
+import numpy
+import random
 import argparse
 import torch.optim as optim
 from statistics import mean
@@ -9,6 +12,10 @@ from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader, RandomSampler, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
+
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
 
 from data.collators import VQACollator, MMStarCollator
 from data.datasets import MMStarDataset, VQADataset
@@ -20,9 +27,6 @@ import models.utils as utils
 #Otherwise, the tokenizer will through a warning
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-torch.manual_seed(0)
-torch.cuda.manual_seed_all(0)
 
 def init_dist():
     dist.init_process_group(backend='nccl')
@@ -74,6 +78,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_ds = concatenate_datasets(combined_train_data)
     
     test_ds = load_dataset(train_cfg.test_dataset_path)
+    train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatinated datasets
 
     # Apply cutoff if specified
     if train_cfg.data_cutoff_idx is None:
@@ -81,12 +86,24 @@ def get_dataloaders(train_cfg, vlm_cfg):
     else:
         total_samples = min(len(train_ds), train_cfg.data_cutoff_idx)
 
-    train_dataset = VQADataset(train_ds.select(range(total_samples)), tokenizer, image_processor)
+    val_size = int(total_samples * train_cfg.val_ratio)
+    train_size = total_samples - val_size
+
+    train_dataset = VQADataset(train_ds.select(range(train_size)), tokenizer, image_processor)
+    val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor)
     test_dataset = MMStarDataset(test_ds['val'], tokenizer, image_processor)
 
     # Create collators
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)
     mmstar_collator = MMStarCollator(tokenizer)
+
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        numpy.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    g = torch.Generator()
+    g.manual_seed(0)
 
     # Create dataloaders
     train_sampler = DistributedSampler(
@@ -103,6 +120,20 @@ def get_dataloaders(train_cfg, vlm_cfg):
         num_workers=8,
         pin_memory=True,
         drop_last=True,
+        worker_init_fn=seed_worker,
+        generator=g,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=train_cfg.batch_size,
+        shuffle=False,
+        collate_fn=vqa_collator,
+        num_workers=8,
+        pin_memory=True,
+        drop_last=True,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
 
     test_loader = DataLoader(
@@ -110,10 +141,12 @@ def get_dataloaders(train_cfg, vlm_cfg):
         batch_size=train_cfg.mmstar_batch_size, 
         shuffle=False, 
         collate_fn=mmstar_collator,
-        pin_memory=True
-    )
+        pin_memory=True,
+        worker_init_fn=seed_worker,
+        generator=g,
+        )
 
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 def test_mmstar(model, tokenizer, test_loader, device):
     model.eval()
@@ -139,13 +172,29 @@ def test_mmstar(model, tokenizer, test_loader, device):
             total_examples += len(is_correct)
             if is_correct:
                 correct_predictions += sum(is_correct)
-
+    model.train()
     accuracy = correct_predictions / total_examples if total_examples > 0 else 0
-
     return accuracy
 
+# Cosine learning rate schedule with warmup (from Karpathy)
+# https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L353
+def get_lr(it, max_lr, max_steps):
+    min_lr = max_lr * 0.1
+    warmup_steps = max_steps * 0.03
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_steps:
+        return max_lr * (it+1) / warmup_steps
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > max_steps:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
+
 def train(train_cfg, vlm_cfg):
-    train_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
+    train_loader, val_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer)
 
     total_dataset_size = len(train_loader.dataset)
@@ -172,12 +221,12 @@ def train(train_cfg, vlm_cfg):
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
         print(f"Training summary{' (global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {len(train_loader)*get_world_size()} batches/epoch, batch size {train_cfg.batch_size*get_world_size()}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
-
         if is_dist():
             print(f"Training summary per GPU: {len(train_loader)} batches/epoch, batch size {train_loader.batch_size}")
+        print(f"Validation summary: {len(val_loader.dataset)} samples, {len(val_loader)} batches/epoch, batch size {train_cfg.batch_size}")
 
     # Define optimizer groups
-    # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train the with the same learning rate
+    # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train them with the same learning rate
     # You could opt to fully freeze the backbones and only train the MP layer, but finetuning them with a lower learning rate makes the training as a whole easier
     param_groups = [{'params': model.MP.parameters(), 'lr': train_cfg.lr_mp},
                     {'params': list(model.decoder.parameters()) + list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_backbones}]
@@ -212,6 +261,12 @@ def train(train_cfg, vlm_cfg):
                 _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
             loss.backward()
+
+            adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
+            adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
+            optimizer.param_groups[0]['lr'] = adj_lr_mp
+            optimizer.param_groups[1]['lr'] = adj_lr_backbones
+
             optimizer.step()
 
             batch_loss = loss.item()
@@ -229,8 +284,25 @@ def train(train_cfg, vlm_cfg):
             batch_loss = mean(dist_gather(batch_loss)) if is_dist() else batch_loss  
             tokens_per_second = sum(dist_gather(tokens_per_second)) if is_dist() else tokens_per_second  
 
-            if train_cfg.eval_in_epochs and global_step % 100 == 0 and is_master():
-                epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
+            if train_cfg.eval_in_epochs and global_step % 250 == 0 and is_master():
+                model.eval()
+                torch.cuda.empty_cache()  # Clear GPU memory
+                with torch.no_grad():
+                    epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
+                    total_val_loss = 0
+                    for batch in val_loader:
+                        images = batch["image"].to(device)
+                        input_ids = batch["input_ids"].to(device)
+                        labels = batch["labels"].to(device)
+                        attention_mask = batch["attention_mask"].to(device)
+
+                        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                            _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+
+                        total_val_loss += loss.item()
+                    avg_val_loss = total_val_loss / len(val_loader)
+                model.train()
+
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
                     if is_dist(): 
@@ -241,7 +313,8 @@ def train(train_cfg, vlm_cfg):
                 else:
                     print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                 if train_cfg.log_wandb and is_master():
-                    run.log({"accuracy": epoch_accuracy}, step=global_step)
+                    run.log({"accuracy": epoch_accuracy,
+                             "val_loss": avg_val_loss}, step=global_step)
 
             if train_cfg.log_wandb and is_master():
                 run.log({"batch_loss": batch_loss,
@@ -291,8 +364,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--lr_mp', type=float, help='Learning rate for the mapping network')
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
-    parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint')
-    parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint')
+    parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
+    parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
 
     args = parser.parse_args()
 
@@ -305,11 +378,11 @@ def main():
         train_cfg.lr_backbones = args.lr_backbones
     if args.vlm_checkpoint_path is not None:
         vlm_cfg.vlm_checkpoint_path = args.vlm_checkpoint_path
-    # Override resume flag based on whether a checkpoint path was provided or explicitly set
+
     if args.resume_from_vlm_checkpoint and args.vlm_checkpoint_path is not None:
-         train_cfg.resume_from_vlm_checkpoint = True
-         # Ensure loading flags are set correctly if resuming
-         vlm_cfg.vlm_load_backbone_weights = False
+        train_cfg.resume_from_vlm_checkpoint = True
+        # When resuming a full VLM, we don't need to load individual backbone weights from original sources
+        vlm_cfg.vlm_load_backbone_weights = False
 
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         init_dist()

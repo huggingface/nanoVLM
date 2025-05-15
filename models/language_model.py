@@ -26,7 +26,6 @@ class RotaryEmbedding(nn.Module):
         self.dim = cfg.lm_hidden_dim // cfg.lm_n_heads # dim of each head
         self.base = cfg.lm_re_base
         self.max_seq_len = cfg.lm_max_position_embeddings
-        
         # Standard RoPE implementation - create frequencies for each dimension
         # freq_i = 1 / (base^(2i/dim)) where i is the dimension index
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
@@ -37,7 +36,6 @@ class RotaryEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, position_ids):
         batch_size, seq_len = position_ids.shape
-        
         # Dynamic scaling for longer sequences
         max_seq = position_ids.max() + 1
         if max_seq > self.original_max_seq_len:
