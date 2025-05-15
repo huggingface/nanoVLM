@@ -149,7 +149,6 @@ def get_dataloaders(train_cfg, vlm_cfg):
     return train_loader, val_loader, test_loader
 
 def test_mmstar(model, tokenizer, test_loader, device):
-    model.eval()
     total_examples = 0
     correct_predictions = 0
     with torch.no_grad():
@@ -161,10 +160,7 @@ def test_mmstar(model, tokenizer, test_loader, device):
             
             correct_answer = tokenizer.batch_decode(labels, skip_special_tokens=True)
             
-            if is_dist():
-                gen = model.module.generate(input_ids, image, attention_mask)
-            else:
-                gen = model.generate(input_ids, image, attention_mask)
+            gen = model.generate(input_ids, image, attention_mask)
             model_output = tokenizer.batch_decode(gen, skip_special_tokens=True)
             
             is_correct = utils.check_multiple_choice_with_regex(model_output, correct_answer)
@@ -172,7 +168,6 @@ def test_mmstar(model, tokenizer, test_loader, device):
             total_examples += len(is_correct)
             if is_correct:
                 correct_predictions += sum(is_correct)
-    model.train()
     accuracy = correct_predictions / total_examples if total_examples > 0 else 0
     return accuracy
 
@@ -286,9 +281,10 @@ def train(train_cfg, vlm_cfg):
 
             if train_cfg.eval_in_epochs and global_step % 250 == 0 and is_master():
                 model.eval()
+                eval_model = model.module if is_dist() else model  # unwrap the model for eval if DDP
                 torch.cuda.empty_cache()  # Clear GPU memory
                 with torch.no_grad():
-                    epoch_accuracy = test_mmstar(model, tokenizer, test_loader, device)
+                    epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
                     total_val_loss = 0
                     for batch in val_loader:
                         images = batch["image"].to(device)
@@ -297,7 +293,7 @@ def train(train_cfg, vlm_cfg):
                         attention_mask = batch["attention_mask"].to(device)
 
                         with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                            _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+                            _, loss = eval_model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
                         total_val_loss += loss.item()
                     avg_val_loss = total_val_loss / len(val_loader)
