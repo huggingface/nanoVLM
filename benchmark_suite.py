@@ -201,6 +201,25 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    results_file = 'benchmark_results.json'
+    cached_results = {}
+    try:
+        with open(results_file, 'r') as f:
+            existing_results_list = json.load(f)
+            for r in existing_results_list:
+                # Ensure all necessary keys are present for a valid cached entry
+                if all(k in r for k in ['vit_model_type', 'mp_pixel_shuffle_factor', 'lm_model_type']):
+                    key = (r['vit_model_type'], r['mp_pixel_shuffle_factor'], r['lm_model_type'])
+                    cached_results[key] = r
+                else:
+                    print(f"Warning: Skipping invalid or incomplete entry in '{results_file}': {r}")
+            print(f"Loaded {len(cached_results)} existing valid results from '{results_file}'.")
+    except FileNotFoundError:
+        print(f"'{results_file}' not found. Starting with an empty cache.")
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON from '{results_file}'. Starting with an empty cache.")
+
+
     # Generate combinations
     all_combinations = list(itertools.product(
         args.vit_model_types,
@@ -208,30 +227,36 @@ if __name__ == "__main__":
         args.lm_model_types
     ))
 
-    # Collect results
-    all_results = []
+    # Collect results for this run
+    results_for_this_run = []
     for vit, pixel_shuffle, lm in all_combinations:
-        print(f"\nBenchmarking ViT={vit}, pixel_shuffle={pixel_shuffle}, LLM={lm}")
-        res = benchmark_vlm(
-            vit_model_type=vit,
-            lm_model_type=lm,
-            lm_tokenizer_path=args.lm_tokenizer,
-            mp_pixel_shuffle_factor=pixel_shuffle,
-            image_path=args.image_path,
-            prompt=args.prompt,
-            max_new_tokens=args.max_new_tokens,
-            num_runs=args.num_runs,
-            warmup_runs=args.warmup_runs,
-            device=device,
-        )
-        all_results.append(res)
+        current_key = (vit, pixel_shuffle, lm)
+        if current_key in cached_results:
+            print(f"\nLoading cached result for ViT={vit}, pixel_shuffle={pixel_shuffle}, LLM={lm}")
+            res = cached_results[current_key]
+        else:
+            print(f"\nBenchmarking ViT={vit}, pixel_shuffle={pixel_shuffle}, LLM={lm}")
+            res = benchmark_vlm(
+                vit_model_type=vit,
+                lm_model_type=lm,
+                lm_tokenizer_path=args.lm_tokenizer,
+                mp_pixel_shuffle_factor=pixel_shuffle,
+                image_path=args.image_path,
+                prompt=args.prompt,
+                max_new_tokens=args.max_new_tokens,
+                num_runs=args.num_runs,
+                warmup_runs=args.warmup_runs,
+                device=device,
+            )
+            cached_results[current_key] = res # Add/update in our master cache
+        results_for_this_run.append(res)
 
-    # Save to JSON
-    with open('benchmark_results.json', 'w') as jf:
-        json.dump(all_results, jf, indent=2)
-    print("\nSaved all results to 'benchmark_results.json'")
+    # Save all known results (including new ones) to JSON
+    with open(results_file, 'w') as jf:
+        json.dump(list(cached_results.values()), jf, indent=2)
+    print(f"\nSaved all (old and new) results to '{results_file}'")
 
-    # Create DataFrame
-    df = pd.DataFrame(all_results)
+    # Create DataFrame for the combinations processed in this run
+    df = pd.DataFrame(list(cached_results.values()))
     print("\n--- Summary Table ---")
     print(df)
