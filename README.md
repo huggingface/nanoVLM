@@ -196,6 +196,7 @@ We welcome contributions to nanoVLM! However, to maintain the repository's focus
 
 Here are some areas we're looking to work on in the near future. Contributions in these areas are particularly welcome:
 
+*   **Evaluations:** Implementing more evaluations or improving our MMStar implementation (highly valued)
 *   **Data Packing:** Implementing a way to create packs of a given size from the input data to optimize training.
 *   **Multi-gpu training:** Training on several GPUs
 *   **Multi-image support:** Training with several images
