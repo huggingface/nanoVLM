@@ -57,7 +57,7 @@ def wrap_model(model):
 
 def get_run_name(train_cfg):
     dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
-    batch_size = f"bs{train_cfg.batch_size}"
+    batch_size = f"bs{int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}"
     epochs = f"ep{train_cfg.epochs}"
     learning_rate = f"lr{train_cfg.lr_backbones}-{train_cfg.lr_mp}"
     num_gpus = f"{get_world_size()}xGPU"
@@ -242,29 +242,34 @@ def train(train_cfg, vlm_cfg):
         model.train()
         total_train_loss = 0
         total_tokens_processed = 0
+        optimizer.zero_grad()
 
-        for batch in train_loader:
+        for i, batch in enumerate(train_loader):
             batch_start_time = time.time()
             images = batch["image"].to(device)
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
-            optimizer.zero_grad()
-
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16ß
                 _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
+            if train_cfg.gradient_accumulation_steps > 1:
+                loss = loss / train_cfg.gradient_accumulation_steps
+
             loss.backward()
 
-            adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
-            adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
-            optimizer.param_groups[0]['lr'] = adj_lr_mp
-            optimizer.param_groups[1]['lr'] = adj_lr_backbones
-
-            optimizer.step()
+            if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
+                adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
+                adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
+                optimizer.param_groups[0]['lr'] = adj_lr_mp
+                optimizer.param_groups[1]['lr'] = adj_lr_backbones
+                optimizer.step()
+                optimizer.zero_grad()
 
             batch_loss = loss.item()
+            if train_cfg.gradient_accumulation_steps > 1:
+                batch_loss = batch_loss * train_cfg.gradient_accumulation_steps
             total_train_loss += batch_loss
 
             num_tokens = torch.sum(attention_mask).item() # Sum of attention mask gives number of tokens
@@ -363,6 +368,7 @@ def main():
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
     parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
+    parser.add_argument('--compile', type=bool, default=True, help='Use torch.compile to optimize the model')
 
     args = parser.parse_args()
 
@@ -375,6 +381,8 @@ def main():
         train_cfg.lr_backbones = args.lr_backbones
     if args.vlm_checkpoint_path is not None:
         vlm_cfg.vlm_checkpoint_path = args.vlm_checkpoint_path
+    if args.compile is not None:
+        train_cfg.compile = args.compile
 
     if args.resume_from_vlm_checkpoint and args.vlm_checkpoint_path is not None:
         train_cfg.resume_from_vlm_checkpoint = True
