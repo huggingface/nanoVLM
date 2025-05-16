@@ -228,11 +228,6 @@ def train(train_cfg, vlm_cfg):
         print(f"Validation summary{' (global)' if is_dist() else ''}: {len(val_loader.dataset)} samples, {int(len(val_loader)*get_world_size())} batches/epoch, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
         if is_dist():
             print(f"Validation summary per GPU: {len(val_loader)} batches/epoch, batch size {val_loader.batch_size}")
-
-    # Calculate total number of optimizer steps for the learning rate scheduler
-    optimizer_steps_per_epoch = (len(train_loader) + train_cfg.gradient_accumulation_steps - 1) // train_cfg.gradient_accumulation_steps
-    max_train_steps = optimizer_steps_per_epoch * train_cfg.epochs
-
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train them with the same learning rate
     # You could opt to fully freeze the backbones and only train the MP layer, but finetuning them with a lower learning rate makes the training as a whole easier
@@ -254,7 +249,7 @@ def train(train_cfg, vlm_cfg):
         epoch_start_time = time.time()
         model.train()
         total_train_loss = 0
-        total_tokens_processed_epoch = 0 # Renamed to avoid conflict if total_tokens_processed is used elsewhere per step
+        total_tokens_processed = 0
         optimizer.zero_grad()
 
         for i, batch in enumerate(train_loader):
@@ -271,100 +266,94 @@ def train(train_cfg, vlm_cfg):
                 loss = loss / train_cfg.gradient_accumulation_steps
 
             loss.backward()
-            
-            current_micro_batch_loss = loss.item()
-            if train_cfg.gradient_accumulation_steps > 1:
-                # De-normalize to get the original loss scale for this micro-batch if it was divided
-                 current_micro_batch_loss = current_micro_batch_loss * train_cfg.gradient_accumulation_steps
-            total_train_loss += current_micro_batch_loss # Accumulate actual micro-batch loss for epoch average
-
-            num_tokens_micro_batch = torch.sum(attention_mask).item() # Sum of attention mask gives number of tokens
-            num_tokens_micro_batch += images.shape[0] * ((images.shape[2] / vlm_cfg.vit_patch_size) ** 2) / (vlm_cfg.mp_pixel_shuffle_factor ** 2) # Add image tokens
-            total_tokens_processed_epoch += num_tokens_micro_batch
-
-            batch_end_time = time.time()
-            batch_duration = batch_end_time - batch_start_time
-            tokens_per_second_micro_batch = num_tokens_micro_batch / batch_duration if batch_duration > 0 else 0
-
-            # Gather loss and t/s from all ranks if DDP - these are for the current micro-batch
-            # Note: batch_loss_for_log will be the gathered loss of the *last* micro-batch in an accumulation window
-            batch_loss_for_log = mean(dist_gather(current_micro_batch_loss)) if is_dist() else current_micro_batch_loss
-            tokens_per_second_for_log = sum(dist_gather(tokens_per_second_micro_batch)) if is_dist() else tokens_per_second_micro_batch
 
             if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
-                # This block executes once per optimizer step (i.e., after accumulation)
-                # global_step is the identifier for the optimizer step we are currently completing (0-indexed)
-                
-                adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, max_train_steps)
-                adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, max_train_steps)
+                adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
+                adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
                 optimizer.param_groups[0]['lr'] = adj_lr_mp
                 optimizer.param_groups[1]['lr'] = adj_lr_backbones
                 optimizer.step()
                 optimizer.zero_grad()
 
-                # Evaluation and logging for the completed optimizer step `global_step`
-                if train_cfg.eval_in_epochs and global_step % train_cfg.eval_interval == 0:
-                    model.eval()
-                    torch.cuda.empty_cache()
-                    with torch.no_grad():
-                        total_val_loss = 0
-                        for val_idx, val_batch in enumerate(val_loader): # Use val_idx and val_batch
-                            images_val = val_batch["image"].to(device)
-                            input_ids_val = val_batch["input_ids"].to(device)
-                            labels_val = val_batch["labels"].to(device)
-                            attention_mask_val = val_batch["attention_mask"].to(device)
+            batch_loss = loss.item()
+            if train_cfg.gradient_accumulation_steps > 1:
+                batch_loss = batch_loss * train_cfg.gradient_accumulation_steps
+            total_train_loss += batch_loss
 
-                            with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                _, val_loss_item = model(input_ids_val, images_val, attention_mask=attention_mask_val, targets=labels_val)
-                            total_val_loss += val_loss_item.item()
-                        avg_val_loss = total_val_loss / len(val_loader)
-                        avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
-                        if train_cfg.log_wandb and is_master():
-                            run.log({"val_loss": avg_val_loss}, step=global_step)
+            num_tokens = torch.sum(attention_mask).item() # Sum of attention mask gives number of tokens
+            num_tokens += images.shape[0] * ((images.shape[2] / vlm_cfg.vit_patch_size) ** 2) / (vlm_cfg.mp_pixel_shuffle_factor ** 2) # Add image tokens = batch_size * (((img_size / patch_size) ** 2) / (pixel_shuffle_factor ** 2))
+            total_tokens_processed += num_tokens
 
-                        if is_master() and global_step % (train_cfg.eval_interval*4) == 0:
-                            eval_model = model.module if is_dist() else model
-                            current_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device) # Renamed epoch_accuracy
-                            if current_accuracy > best_accuracy:
-                                best_accuracy = current_accuracy
-                                if is_dist(): 
-                                    model.module.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
-                                else:
-                                    model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
-                            if train_cfg.log_wandb: # is_master check is already done
-                                run.log({"accuracy": current_accuracy}, step=global_step)
-                            print(f"Step: {global_step}, Loss: {batch_loss_for_log:.4f}, Tokens/s: {tokens_per_second_for_log:.2f}, Accuracy: {current_accuracy:.4f}")
-                        elif is_master(): # Still eval interval, but not accuracy printing interval
-                            print(f"Step: {global_step}, Loss: {batch_loss_for_log:.4f}, Tokens/s: {tokens_per_second_for_log:.2f}")
-                    model.train()          
+            batch_end_time = time.time()
+            batch_duration = batch_end_time - batch_start_time
+            tokens_per_second = num_tokens / batch_duration 
 
-                if train_cfg.log_wandb and is_master():
-                    run.log({"batch_loss": batch_loss_for_log, # Log gathered loss from last micro-batch
-                             "tokens_per_second": tokens_per_second_for_log}, step=global_step) # Log gathered T/s
+            # gather loss and t/s from all ranks if DDP
+            batch_loss = mean(dist_gather(batch_loss)) if is_dist() else batch_loss  
+            tokens_per_second = sum(dist_gather(tokens_per_second)) if is_dist() else tokens_per_second  
 
-                global_step += 1 # Increment after all actions for this optimizer step are done
+            if train_cfg.eval_in_epochs and global_step % train_cfg.eval_interval == 0: #and is_master():
+                model.eval()
+                torch.cuda.empty_cache()  # Clear GPU memory
+                with torch.no_grad():
+                    total_val_loss = 0
+                    for batch in val_loader:
+                        images = batch["image"].to(device)
+                        input_ids = batch["input_ids"].to(device)
+                        labels = batch["labels"].to(device)
+                        attention_mask = batch["attention_mask"].to(device)
 
-        # End of epoch
-        # avg_train_loss is calculated based on total_train_loss which sums de-normalized micro-batch losses.
-        # len(train_loader) is number of micro-batches. This remains correct for average micro-batch loss.
-        avg_train_loss_epoch = total_train_loss / len(train_loader) 
-        avg_train_loss_epoch = mean(dist_gather(avg_train_loss_epoch)) if is_dist() else avg_train_loss_epoch
+                        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                            _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+
+                        total_val_loss += loss.item()
+                    avg_val_loss = total_val_loss / len(val_loader)
+                    avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
+                    if train_cfg.log_wandb and is_master():
+                        run.log({"val_loss": avg_val_loss}, step=global_step)
+
+                    if is_master() and global_step % (train_cfg.eval_interval*4) == 0:
+                        eval_model = model.module if is_dist() else model  # unwrap the model for eval if DDP
+                        epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
+                        if epoch_accuracy > best_accuracy:
+                            best_accuracy = epoch_accuracy
+                            if is_dist(): 
+                                model.module.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
+                            else:
+                                model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
+                        run.log({"accuracy": epoch_accuracy}, step=global_step)
+                        print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
+                    elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
+                        print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
+
+                model.train()          
+
+            if train_cfg.log_wandb and is_master():
+                run.log({"batch_loss": batch_loss,
+                         "tokens_per_second": tokens_per_second}, step=global_step)
+                
+            if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
+                global_step += 1
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        # gather average batch loss from all ranks if DDP
+        avg_train_loss = mean(dist_gather(avg_train_loss)) if is_dist() else avg_train_loss  
 
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         epoch_times.append(epoch_duration)
 
-        # gather and sum total_tokens_processed_epoch across all ranks if DDP
-        total_tokens_processed_epoch_gathered = sum(dist_gather(total_tokens_processed_epoch)) if is_dist() else total_tokens_processed_epoch
-        epoch_tokens_per_second = total_tokens_processed_epoch_gathered / epoch_duration if epoch_duration > 0 else 0
+        # gather and sum total_tokens_processed accross all ranks if DDP
+        total_tokens_processed = sum(dist_gather(total_tokens_processed)) if is_dist() else total_tokens_processed  
+        epoch_tokens_per_second = total_tokens_processed / epoch_duration
 
         if is_master():
             if train_cfg.log_wandb:
-                run.log({"epoch_loss": avg_train_loss_epoch,
+                run.log({"epoch_loss": avg_train_loss,
                          "epoch_duration": epoch_duration,
-                         "epoch_tokens_per_second": epoch_tokens_per_second}, step=global_step) # Log epoch metrics at current global_step
+                         "epoch_tokens_per_second": epoch_tokens_per_second})
 
-            print(f"Epoch {epoch+1}/{train_cfg.epochs}, Train Loss: {avg_train_loss_epoch:.4f} | Time: {epoch_duration:.2f}s | T/s: {epoch_tokens_per_second:.2f}")
+            print(f"Epoch {epoch+1}/{train_cfg.epochs}, Train Loss: {avg_train_loss:.4f} | Time: {epoch_duration:.2f}s | T/s: {epoch_tokens_per_second:.2f}")
 
     # Summary Statistics
     if is_master():
