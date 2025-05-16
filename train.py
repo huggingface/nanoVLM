@@ -347,7 +347,8 @@ def train(train_cfg, vlm_cfg):
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
 
-        accuracy = test_mmstar(model, tokenizer, test_loader, device)
+        # unwrap the model for eval if DDP
+        accuracy = test_mmstar(model.module if is_dist() else model, tokenizer, test_loader, device)
         print(f"MMStar Accuracy: {accuracy:.4f}")
 
         if train_cfg.log_wandb:
