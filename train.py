@@ -317,10 +317,7 @@ def train(train_cfg, vlm_cfg):
                         epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
                         if epoch_accuracy > best_accuracy:
                             best_accuracy = epoch_accuracy
-                            if is_dist(): 
-                                model.module.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
-                            else:
-                                model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
+                            eval_model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
                         run.log({"accuracy": epoch_accuracy}, step=global_step)
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                     elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
