@@ -380,7 +380,7 @@ def main():
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
     parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
-    parser.add_argument('--compile', type=bool, default=True, help='Use torch.compile to optimize the model')
+    parser.add_argument('--compile', type=bool, default=False, help='Use torch.compile to optimize the model')
 
     args = parser.parse_args()
 
