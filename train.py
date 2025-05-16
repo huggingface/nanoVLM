@@ -5,6 +5,7 @@ import wandb
 import numpy
 import random
 import argparse
+import contextlib
 import torch.optim as optim
 from statistics import mean
 from dataclasses import asdict
@@ -259,8 +260,20 @@ def train(train_cfg, vlm_cfg):
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
+            # if DDP: don't sync gradients when accumulating 
+            if (is_dist()
+                and train_cfg.gradient_accumulation_steps > 1
+                and not (
+                    (i + 1) % train_cfg.gradient_accumulation_steps == 0 
+                    or i + 1 == len(train_loader)
+                )):
+                context = model.no_sync()
+            else:
+                context = contextlib.nullcontext()
+
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16ß
-                _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+                with context:
+                    _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
             if train_cfg.gradient_accumulation_steps > 1:
                 loss = loss / train_cfg.gradient_accumulation_steps
