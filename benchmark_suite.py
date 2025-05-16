@@ -46,7 +46,8 @@ def benchmark_vlm(
     )
     model = VisionLanguageModel(cfg, load_backbone=True).to(device).eval()
     tokenizer = get_tokenizer(cfg.lm_tokenizer)
-    image_processor = get_image_processor(cfg.vit_img_size)
+    vit_img_size = int(cfg.vit_model_type[-3:])  # Kinda hacky, works for siglip models
+    image_processor = get_image_processor(vit_img_size)
 
     initial_vram_model_mb = 0
     if device.type == 'cuda':
@@ -178,7 +179,7 @@ def benchmark_vlm(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark VLM inference speed with JSON logging and analysis.")
 
-    parser.add_argument("--vit_model_types", type=str, nargs='+', default=["google/siglip-base-patch16-256", "google/siglip-base-patch16-512", "google/siglip2-base-patch16-512", "google/siglip2-so400m-patch16-512"],
+    parser.add_argument("--vit_model_types", type=str, nargs='+', default=["google/siglip2-base-patch16-256", "google/siglip2-base-patch16-512", "google/siglip2-so400m-patch16-512"],
                         help="List of ViT model identifiers.")
     parser.add_argument("--lm_model_types", type=str, nargs='+', default=["HuggingFaceTB/SmolLM2-135M", "HuggingFaceTB/SmolLM2-360M", "HuggingFaceTB/SmolLM2-1.7B"],
                         help="List of LLM model identifiers.")
