@@ -64,7 +64,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
     if train_cfg.data_cutoff_idx is None:
         total_samples = len(train_ds)  # Use the entire dataset
     else:
-        total_samples = train_cfg.data_cutoff_idx
+        total_samples = min(len(train_ds), train_cfg.data_cutoff_idx)
 
     val_size = int(total_samples * train_cfg.val_ratio)
     train_size = total_samples - val_size
@@ -265,9 +265,6 @@ def train(train_cfg, vlm_cfg):
                     avg_val_loss = total_val_loss / len(val_loader)
                 model.train()
 
-                print("Epoch accuracy:")
-                print(epoch_accuracy)
-                print(best_accuracy)
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
                     model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
