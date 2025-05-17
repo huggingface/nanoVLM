@@ -7,7 +7,7 @@ import random
 import argparse
 import torch.optim as optim
 from dataclasses import asdict
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset, concatenate_datasets, Dataset
 from torch.utils.data import DataLoader
 
 torch.manual_seed(0)
@@ -41,9 +41,20 @@ def get_dataloaders(train_cfg, vlm_cfg):
 
     # Load and combine all training datasets
     combined_train_data = []
-    for dataset_name in train_cfg.train_dataset_name:
-        train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name)
-        combined_train_data.append(train_ds['train'])
+    total_samples_per_dataset = train_cfg.data_cutoff_idx // len(train_cfg.train_dataset_name) if train_cfg.data_cutoff_idx else None
+
+    for i, dataset_name in enumerate(train_cfg.train_dataset_name):
+        train_ds = load_dataset(
+            train_cfg.train_dataset_path,
+            dataset_name,
+            split='train',
+            streaming=bool(train_cfg.data_cutoff_idx)
+        )
+        if train_cfg.data_cutoff_idx:
+            train_ds = Dataset.from_list(list(train_ds.take(total_samples_per_dataset + (train_cfg.data_cutoff_idx % len(train_cfg.train_dataset_name) if i == 0 else 0))))
+        
+        combined_train_data.append(train_ds)
+
     train_ds = concatenate_datasets(combined_train_data)
     
     test_ds = load_dataset(train_cfg.test_dataset_path)
@@ -53,7 +64,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
     if train_cfg.data_cutoff_idx is None:
         total_samples = len(train_ds)  # Use the entire dataset
     else:
-        total_samples = min(len(train_ds), train_cfg.data_cutoff_idx)
+        total_samples = train_cfg.data_cutoff_idx
 
     val_size = int(total_samples * train_cfg.val_ratio)
     train_size = total_samples - val_size
@@ -254,6 +265,9 @@ def train(train_cfg, vlm_cfg):
                     avg_val_loss = total_val_loss / len(val_loader)
                 model.train()
 
+                print("Epoch accuracy:")
+                print(epoch_accuracy)
+                print(best_accuracy)
                 if epoch_accuracy > best_accuracy:
                     best_accuracy = epoch_accuracy
                     model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
