@@ -260,7 +260,9 @@ def train(train_cfg, vlm_cfg):
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
-            # if DDP: don't sync gradients when accumulating 
+            # When using DDP with gradient accumulation,
+            # skip gradient synchronization on intermediate steps to save time.
+            # Gradients only need to be synced at the end of each accumulation cycle.
             if (is_dist()
                 and train_cfg.gradient_accumulation_steps > 1
                 and not (
