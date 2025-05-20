@@ -60,7 +60,7 @@ class VisionLanguageModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5):
+    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
         # Process image through vision encoder and projection
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
@@ -95,10 +95,12 @@ class VisionLanguageModel(nn.Module):
             # Apply head to get logits (if model is in embedding mode)
             if not self.decoder.lm_use_tokens:
                 last_token_logits = self.decoder.head(last_token_logits)
-
-            filtered_logits = top_k_top_p_filtering(last_token_logits, top_k=top_k, top_p=top_p)
-            probs = torch.softmax(filtered_logits/temperature, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
+            if greedy:
+                next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
+            else:
+                filtered_logits = top_k_top_p_filtering(last_token_logits, top_k=top_k, top_p=top_p)
+                probs = torch.softmax(filtered_logits/temperature, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
                 
             generated_tokens[:, i] = next_token.squeeze(-1)
             
