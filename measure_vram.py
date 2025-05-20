@@ -4,6 +4,10 @@ import torch.optim as optim
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
+
 from data.collators import VQACollator
 from data.datasets import VQADataset
 from data.processors import get_image_processor, get_tokenizer
@@ -12,10 +16,6 @@ import models.config as config
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-torch.manual_seed(0)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(0)
 
 def measure_vram(args, vlm_cfg, train_cfg_defaults):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

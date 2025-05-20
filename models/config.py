@@ -25,12 +25,9 @@ class VLMConfig:
     lm_dropout: float = 0.0
     lm_n_blocks: int = 30
     lm_attn_scaling: float = 1.0
-    lm_max_length: int = 128 - 49  # Deduct the image token lenght to achieve a 'nice number'
+    lm_max_length: int = 128 - 49  # Deduct the image token length to achieve a 'nice number'
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
-    lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embeding weights
-    lm_rope_factor: float = 0.7
-    lm_beta_fast: int = 32
-    lm_beta_slow: int = 1
+    lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
     lm_model_type: str = 'HuggingFaceTB/SmolLM2-135M'
     lm_tokenizer: str = 'HuggingFaceTB/cosmo2-tokenizer'
     lm_eos_token_id: int = 0
@@ -43,12 +40,15 @@ class VLMConfig:
 
 @dataclass
 class TrainConfig:
-    lr_mp: float = 1e-3
-    lr_backbones: float = 5e-5
+    lr_mp: float = 2e-3
+    lr_backbones: float = 1e-4
     data_cutoff_idx: int = None
+    val_ratio: float = 0.025
     batch_size: int = 256
+    gradient_accumulation_steps: int = 1
     mmstar_batch_size: int = 32
     eval_in_epochs: bool = True
+    eval_interval: int = 250
     epochs: int = 5
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch

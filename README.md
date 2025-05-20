@@ -22,12 +22,12 @@ It is therefore a simple yet powerful platform to get started with VLMs. Perfect
 
 ## Quick Start
 
-You can either clone the repository, setup an environement and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
+You can either clone the repository, setup an environment and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
 
 
 ## Environment Setup
 
-We really like `uv` and recommend using it as your package manager. But feel free to use any one that you prefer.
+We really like `uv` and recommend using it as your package manager. But feel free to use whichever you prefer.
 
 Let's first clone the repository:
 ```bash
@@ -37,7 +37,7 @@ cd nanoVLM
 
 If you want to use `uv`:
 ```bash
-uv init --bare
+uv init --bare --python 3.12
 uv sync --python 3.12
 source .venv/bin/activate
 uv add torch numpy torchvision pillow datasets huggingface-hub transformers wandb
@@ -70,6 +70,10 @@ which will use the default `models/config.py`.
 To try a [trained model](https://huggingface.co/lusxvr/nanoVLM-222M), you can simply use the provided generate script
 ```bash
 python generate.py
+```
+or, to use distributed data parallel with 8 gpus, you can simply run:
+```bash
+torchrun --nproc_per_node=8 train.py
 ```
 
 If we feed the example image in `assets/image.png` with a question into the model, we get the following output. Even after only short training, the model can recognize the cat in the picture. 
@@ -196,6 +200,7 @@ We welcome contributions to nanoVLM! However, to maintain the repository's focus
 
 Here are some areas we're looking to work on in the near future. Contributions in these areas are particularly welcome:
 
+*   **Evaluations:** Implementing more evaluations or improving our MMStar implementation (highly valued)
 *   **Data Packing:** Implementing a way to create packs of a given size from the input data to optimize training.
 *   **Multi-gpu training:** Training on several GPUs
 *   **Multi-image support:** Training with several images
