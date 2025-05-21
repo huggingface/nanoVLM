@@ -273,7 +273,7 @@ def train(train_cfg, vlm_cfg):
             else:
                 context = contextlib.nullcontext()
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16ß
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16
                 with context:
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
