@@ -232,9 +232,10 @@ def train(train_cfg, vlm_cfg):
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train them with the same learning rate
     # You could opt to fully freeze the backbones and only train the MP layer, but finetuning them with a lower learning rate makes the training as a whole easier
-    param_groups = [{'params': model.MP.parameters(), 'lr': train_cfg.lr_mp},
+    param_groups = [{'params': list(model.MP.parameters()), 'lr': train_cfg.lr_mp},
                     {'params': list(model.decoder.parameters()) + list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_backbones}]
     optimizer = optim.AdamW(param_groups)
+    all_params = [p for group in optimizer.param_groups for p in group['params']]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -283,6 +284,9 @@ def train(train_cfg, vlm_cfg):
             loss.backward()
 
             if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
+                if train_cfg.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
+
                 adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
                 adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
                 optimizer.param_groups[0]['lr'] = adj_lr_mp
