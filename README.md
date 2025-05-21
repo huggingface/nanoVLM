@@ -82,12 +82,11 @@ Input:
 Image + 'What is this?'
 
 Outputs:
-Generation 1:  This is a cat sitting on the floor. I think this is a cat sitting on the ground.
-Generation 2:  This picture is clicked outside. In the center there is a brown color cat sitting on the ground and
-Generation 3:  This is a cat sitting on the ground, which looks like a carpet. I think this is a
-Generation 4:  This is a cat sitting on the ground. I can see the fur, which is long and soft
-Generation 5:  This is a cat sitting on the floor, which is covered with a carpet. I can see the
-```
+Generation 1:  This is a cat sitting on the ground. I think this is a cat sitting on the ground.
+Generation 2:  This picture is clicked outside. In the center there is a brown color cat seems to be sitting on
+Generation 3:  This is a cat sitting on the ground, which is of white and brown in color. This cat
+Generation 4:  This is a cat sitting on the ground. I think this is a cat sitting on the ground.
+Generation 5:  This is a cat sitting on the ground, which is covered with a mat. I think this is```
 
 ## Hub integration
 

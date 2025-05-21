@@ -41,10 +41,9 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float('Inf')
         # Remove tokens with cumulative probability above top_p
         sorted_indices_to_remove = cumulative_probs > top_p
 
-        # Shift right to keep at least one token
-        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-        sorted_indices_to_remove[..., 0] = 0
-
+        # Always keep the first token
+        sorted_indices_to_remove[..., 0] = False
+        
         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
         logits = logits.masked_fill(indices_to_remove, filter_value)
 
