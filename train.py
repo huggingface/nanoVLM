@@ -380,8 +380,6 @@ def train(train_cfg, vlm_cfg):
         # Push the best model to the hub (Please set your user name in the config!)
         if vlm_cfg.hf_repo_name is not None:
             print("Training complete. Pushing model to Hugging Face Hub...")
-            from huggingface_hub import login
-            login()
             hf_model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
             hf_model.push_to_hub(vlm_cfg.hf_repo_name)
 

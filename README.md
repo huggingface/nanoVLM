@@ -58,9 +58,10 @@ Dependencies:
 
 ## Training
 
-To train nanoVLM, you can simply use the provided training script
+To train nanoVLM, you can simply use the provided training script. After training, your model gets uploaded to the Hub!
 ```bash
 wandb login --relogin
+huggingface-cli login
 python train.py
 ```
 which will use the default `models/config.py`.
