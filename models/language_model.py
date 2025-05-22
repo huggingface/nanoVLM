@@ -146,22 +146,6 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # attention_mask is (B, T_kv_total_length), 1 for attend, 0 for pad
         additive_attn_mask = None
         if attention_mask is not None:
-            # Ensure attention_mask covers the full T_kv length
-            # Create an additive mask: 0 for attend, -inf for not attend.
-            # Unsqueeze to make it broadcastable for [B, num_heads, T_q, T_kv]
-            # T_q is T_curr here.
-            # Mask should be [B, 1, T_curr, T_kv] for SDPA if T_q != T_kv.
-            # Or [B, 1, 1, T_kv] if we want to apply same mask for all query pos.
-            # Let's use [B, 1, T_curr, T_kv] for SDPA to allow for specific masking per query pos.
-            # For manual, we need [B,1,T_curr,T_kv] if T_curr != T_kv
-            
-            # The mask provided (attention_mask) refers to the full sequence length up to T_kv.
-            # We need to select the relevant part for the current query (T_curr) attending to keys (T_kv).
-            # A common way is to make the mask [B, 1, T_curr, T_kv] where mask[b,0,i,j] is for q_i attending k_j.
-            # Or, if SDPA expects a mask for k,v of shape [B,NumHeads,T_q,T_kv] or broadcastable
-            # often [B,1,1,T_kv] (if causal, or if mask depends only on key positions)
-            # or [B,1,T_curr,T_kv] if mask depends on q and k positions.
-            
             # The current `attention_mask` parameter is assumed to be `[B, total_sequence_length_kv]`
             # Let's make it `[B, 1, 1, T_kv]` for SDPA.
             mask_for_keys = attention_mask[:, :T_kv] # Ensure mask matches key length [B, T_kv]
