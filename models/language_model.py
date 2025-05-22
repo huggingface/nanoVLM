@@ -336,11 +336,6 @@ class LanguageModel(nn.Module):
             next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
             generated_ids = torch.cat((generated_ids, next_token), dim=1)
             
-            # current_full_attention_mask = torch.cat(
-            #     (current_full_attention_mask, torch.ones(B, 1, device=inputs.device, dtype=torch.long)),
-            #     dim=1
-            # )
-            
             # The token being processed is `next_token`. Its position is `generated_ids.size(1) - 1`.
             current_token_start_pos = generated_ids.size(1) - 1
 
