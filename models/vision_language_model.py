@@ -59,7 +59,7 @@ class VisionLanguageModel(nn.Module):
 
         return logits, loss
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(self, input_ids, image, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
         # input_ids: [B, T_prompt_text]
         # image: [B, C, H, W]

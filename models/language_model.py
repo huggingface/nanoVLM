@@ -289,7 +289,7 @@ class LanguageModel(nn.Module):
         return x, new_kv_cache_list
 
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(self, inputs, max_new_tokens=20):
         # Add batch dimension if needed
         if inputs.dim() == 1:
