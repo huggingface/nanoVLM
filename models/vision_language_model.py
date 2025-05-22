@@ -80,7 +80,7 @@ class VisionLanguageModel(nn.Module):
         
         # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder.forward(
-            inputs_embeds=initial_combined_embeds,
+            initial_combined_embeds,
             attention_mask=None,
             kv_cache=None,
             start_pos=0
@@ -116,7 +116,7 @@ class VisionLanguageModel(nn.Module):
 
             # Call decoder.forward with the new token's embedding and the updated KV cache
             decode_step_output, kv_cache_list = self.decoder.forward(
-                inputs_embeds=next_token_embed,
+                next_token_embed,
                 attention_mask=None, # Autoregressive, so no explicit mask beyond KV cache structure
                 kv_cache=kv_cache_list, # Pass the updated cache
                 start_pos=current_token_start_pos

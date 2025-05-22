@@ -260,19 +260,13 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, input_ids=None, inputs_embeds=None, attention_mask=None, kv_cache=None, start_pos=0):
-        if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif input_ids is not None:
-            x = self.token_embedding(input_ids) # Embed the current segment of token IDs
-        elif inputs_embeds is not None:
-            x = inputs_embeds # Use pre-computed embeddings
-        else:
-            raise ValueError("You have to specify either input_ids or inputs_embeds")
+    def forward(self, x, attention_mask=None, kv_cache=None, start_pos=0):
+        if self.lm_use_tokens:
+            x = self.token_embedding(x)
+
+        B, T_curr, _ = x.size() # T_curr is the length of the current input sequence
         
-        B, T_curr, _ = x.size() # T_curr is the length of the current input segment
-        
-        # Create position_ids for the current segment based on start_pos
+        # Create position_ids for the current sequence based on start_pos
         current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
@@ -287,7 +281,7 @@ class LanguageModel(nn.Module):
         x = self.norm(x)
 
         # Compute logits if we are using tokens, otherwise stay in the embedding space
-        if self.cfg.lm_use_tokens: 
+        if self.lm_use_tokens: 
             x = self.head(x) 
 
         return x, new_kv_cache_list
@@ -299,54 +293,43 @@ class LanguageModel(nn.Module):
         if inputs.dim() == 1:
             inputs = inputs.unsqueeze(0)
             
-        B, T_prompt = inputs.size()
-        generated_ids = inputs.clone()
+        generated_outputs = inputs.clone()
 
         kv_cache_list = [None] * len(self.blocks)
         last_token_logits = None
 
-        if T_prompt > 0:
-            # Prefill phase: process the entire prompt.
-            # lm_use_tokens in cfg determines if self.forward returns logits or embeddings.
-            # For standalone generate, we need logits, so lm_use_tokens should be True.
-            if not self.cfg.lm_use_tokens:
-                 raise ValueError("LanguageModel.generate requires cfg.lm_use_tokens to be True.")
-        else:
-            # Handle empty prompt: start with a BOS token.
-            # This assumes self.cfg.lm_vocab_size is available and a BOS token id (e.g. 0) makes sense.
-            bos_token_id = 0 # Placeholder, ideally from tokenizer.
-            next_token = torch.tensor([[bos_token_id]], device=inputs.device, dtype=torch.long).expand(B, -1)
-            generated_ids = next_token
-            # current_full_attention_mask = torch.ones(B, 1, device=inputs.device, dtype=torch.long)
-
         prompt_output, kv_cache_list = self.forward(
-            input_ids=generated_ids, 
+            generated_outputs, 
             attention_mask=None,
             kv_cache=None,
             start_pos=0
         )
-        last_token_logits = prompt_output[:, -1, :]
+        last_output = prompt_output[:, -1, :]
 
         # Decode Phase with KV cache
         for i in range(max_new_tokens):
-            next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
-            generated_ids = torch.cat((generated_ids, next_token), dim=1)
+            if self.lm_use_tokens:
+                next_output = torch.argmax(last_token_logits, dim=-1, keepdim=True)
+            else:
+                next_output = last_output.unsqueeze(1)
+
+            generated_outputs = torch.cat((generated_outputs, next_output), dim=1)
             
-            # The token being processed is `next_token`. Its position is `generated_ids.size(1) - 1`.
-            current_token_start_pos = generated_ids.size(1) - 1
+            # The token being processed is `next_token`. Its position is `generated_outputs.size(1) - 1`.
+            current_token_start_pos = generated_outputs.size(1) - 1
 
             if i == max_new_tokens - 1: 
                 break
 
             decode_step_output, kv_cache_list = self.forward(
-                input_ids=next_token, 
+                next_output, 
                 attention_mask=None,
                 kv_cache=kv_cache_list,
                 start_pos=current_token_start_pos
             )
-            last_token_logits = decode_step_output[:, -1, :] 
+            last_output = decode_step_output[:, -1, :] 
     
-        return generated_ids
+        return generated_outputs
 
     # Load the model from a pretrained HuggingFace model (we don't want to have to train the Language Backbone from scratch)
     @classmethod
