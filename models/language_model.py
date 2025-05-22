@@ -295,11 +295,7 @@ class LanguageModel(nn.Module):
         # Add batch dimension if needed
         if inputs.dim() == 1:
             inputs = inputs.unsqueeze(0)
-            
         generated_outputs = inputs.clone()
-
-        kv_cache_list = [None] * len(self.blocks)
-        last_token_logits = None
 
         prompt_output, kv_cache_list = self.forward(
             generated_outputs, 
@@ -312,7 +308,7 @@ class LanguageModel(nn.Module):
         # Decode Phase with KV cache
         for i in range(max_new_tokens):
             if self.lm_use_tokens:
-                next_output = torch.argmax(last_token_logits, dim=-1, keepdim=True)
+                next_output = torch.argmax(last_output, dim=-1, keepdim=True)
             else:
                 next_output = last_output.unsqueeze(1)
 
