@@ -273,7 +273,7 @@ def train(train_cfg, vlm_cfg):
             else:
                 context = contextlib.nullcontext()
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16ß
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16
                 with context:
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
@@ -333,7 +333,8 @@ def train(train_cfg, vlm_cfg):
                         if epoch_accuracy > best_accuracy:
                             best_accuracy = epoch_accuracy
                             eval_model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
-                        run.log({"accuracy": epoch_accuracy}, step=global_step)
+                        if train_cfg.log_wandb and is_master():    
+                            run.log({"accuracy": epoch_accuracy}, step=global_step)
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                     elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
@@ -391,8 +392,8 @@ def main():
     parser.add_argument('--lr_mp', type=float, help='Learning rate for the mapping network')
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
     parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
+    parser.add_argument('--compile', type=bool, help='Use torch.compile to optimize the model')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
-    parser.add_argument('--compile', type=bool, default=False, help='Use torch.compile to optimize the model')
 
     args = parser.parse_args()
 
