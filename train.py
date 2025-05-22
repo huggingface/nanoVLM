@@ -288,8 +288,8 @@ def train(train_cfg, vlm_cfg):
                 device_type=device.type,
                 dtype=torch.bfloat16 if device.type in ['cuda', 'cpu'] else torch.float16
             )
-
             with autocast_context:
+
                 with context:
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
@@ -394,14 +394,18 @@ def train(train_cfg, vlm_cfg):
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
 
-        # unwrap the model for eval if DDP
-        accuracy = test_mmstar(model.module if is_dist() else model, tokenizer, test_loader, device)
-        print(f"MMStar Accuracy: {accuracy:.4f}")
+        # Push the best model to the hub (Please set your user name in the config!)
+        if vlm_cfg.hf_repo_name is not None:
+            print("Training complete. Pushing model to Hugging Face Hub...")
+            from huggingface_hub import login
+            login()
+            hf_model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
+            hf_model.push_to_hub(vlm_cfg.hf_repo_name)
 
         if train_cfg.log_wandb:
             run.summary["avg_epoch_time"] = avg_epoch_time
             run.summary["avg_time_per_sample"] = avg_time_per_sample
-            run.summary["mmstar_acc"] = accuracy
+            run.summary["mmstar_acc"] = best_accuracy
             run.finish()
 
 def main():
