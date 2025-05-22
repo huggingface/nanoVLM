@@ -60,7 +60,7 @@ class VisionLanguageModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, input_ids, image, max_new_tokens=5):
+    def generate(self, input_ids, image, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
         # input_ids: [B, T_prompt_text]
         # image: [B, C, H, W]
         # max_new_tokens: int, maximum number of tokens to generate
@@ -72,53 +72,44 @@ class VisionLanguageModel(nn.Module):
         image_embd = self.MP(image_embd)      # [B, T_img, D_lm]
 
         # 2. Embed initial text prompt tokens
-        # self.decoder is LanguageModel, which has token_embedding layer
         prompt_token_embeds = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
 
         # 3. Combine image and text prompt embeddings for prefill
         initial_combined_embeds = torch.cat((image_embd, prompt_token_embeds), dim=1) # [B, T_img + T_prompt_text, D_lm]
         current_total_seq_len = initial_combined_embeds.size(1)
-
         
-        # Initialize KV cache for all decoder (LanguageModel) blocks
-        kv_cache_list = [None] * len(self.decoder.blocks)
-        
-        # --- Prefill Phase ---
-        # Process combined image and prompt embeddings to populate KV cache.
-        # start_pos is 0 for this initial combined sequence.
-        # self.decoder.forward will return embeddings or logits based on self.decoder.cfg.lm_use_tokens
+        # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder.forward(
             inputs_embeds=initial_combined_embeds,
-            attention_mask=None,
-            kv_cache=None, # No cache for the first pass
+            attention_mask=None, 
+            kv_cache=None,       
             start_pos=0
         )
         
-        # Get the output for the very last token of the prefill sequence
-        last_token_output = prefill_output[:, -1, :] # [B, D_lm] or [B, VocabSize]
+        last_token_output_from_prefill = prefill_output[:, -1, :] 
         
-        # Convert to logits if decoder returned embeddings
         if not self.decoder.cfg.lm_use_tokens:
-            current_logits = self.decoder.head(last_token_output) # [B, VocabSize]
+            current_logits = self.decoder.head(last_token_output_from_prefill) 
         else:
-            current_logits = last_token_output # Already logits
+            current_logits = last_token_output_from_prefill 
 
-        # Store generated token IDs
-        generated_token_ids = torch.zeros((B, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
+        # Store newly generated token IDs
+        newly_generated_ids_list = []
 
-        # --- Decode Phase ---
-        for i in range(max_new_tokens):
-            # Select next token (greedy)
-            next_token_id = torch.argmax(current_logits, dim=-1, keepdim=True) # [B, 1]
-            generated_token_ids[:, i] = next_token_id.squeeze(-1)
+        # --- Decode Phase with Sampling ---
+        for _ in range(max_new_tokens):
+            if greedy:
+                next_token_id = torch.argmax(current_logits, dim=-1, keepdim=True)
+            else:
+                filtered_logits = top_k_top_p_filtering(current_logits, top_k=top_k, top_p=top_p)
+                probs = torch.softmax(filtered_logits / temperature, dim=-1)
+                next_token_id = torch.multinomial(probs, num_samples=1)
             
-            if i == max_new_tokens - 1: # No need to process after the last token is generated
-                break
-
+            newly_generated_ids_list.append(next_token_id)
+            
             # Embed the newly generated token
             next_token_embed = self.decoder.token_embedding(next_token_id) # [B, 1, D_lm]
             
-            # Update total sequence length and attention mask
             # The start_pos for the new token is the current total sequence length *before* adding this new token
             current_token_start_pos = current_total_seq_len
             current_total_seq_len += 1
@@ -126,21 +117,22 @@ class VisionLanguageModel(nn.Module):
             # Call decoder.forward with the new token's embedding and the updated KV cache
             decode_step_output, kv_cache_list = self.decoder.forward(
                 inputs_embeds=next_token_embed,
-                attention_mask=None,
+                attention_mask=None, # Autoregressive, so no explicit mask beyond KV cache structure
                 kv_cache=kv_cache_list, # Pass the updated cache
                 start_pos=current_token_start_pos
             )
             
-            # Get output for the new token (it's the only one in this forward pass's output sequence)
             last_token_output = decode_step_output[:, -1, :] 
             
-            # Convert to logits if needed
             if not self.decoder.cfg.lm_use_tokens:
                 current_logits = self.decoder.head(last_token_output)
             else:
                 current_logits = last_token_output
         
-        return generated_token_ids
+        if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
+             return torch.empty((B,0), dtype=torch.long, device=input_ids.device)
+
+        return torch.cat(newly_generated_ids_list, dim=1)
 
     @classmethod
     def from_pretrained(
