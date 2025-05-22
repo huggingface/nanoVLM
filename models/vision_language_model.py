@@ -88,7 +88,7 @@ class VisionLanguageModel(nn.Module):
         
         last_token_output_from_prefill = prefill_output[:, -1, :] 
         
-        if not self.decoder.cfg.lm_use_tokens:
+        if not self.decoder.lm_use_tokens:
             current_logits = self.decoder.head(last_token_output_from_prefill) 
         else:
             current_logits = last_token_output_from_prefill 
@@ -124,7 +124,7 @@ class VisionLanguageModel(nn.Module):
             
             last_token_output = decode_step_output[:, -1, :] 
             
-            if not self.decoder.cfg.lm_use_tokens:
+            if not self.decoder.lm_use_tokens:
                 current_logits = self.decoder.head(last_token_output)
             else:
                 current_logits = last_token_output

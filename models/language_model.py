@@ -264,15 +264,17 @@ class LanguageModel(nn.Module):
         if self.lm_use_tokens:
             x = self.token_embedding(x)
 
-        B, T_curr, _ = x.size() # T_curr is the length of the current input sequence
+        # T_curr is the length of the current input sequence
+        B, T_curr, _ = x.size()
         
         # Create position_ids for the current sequence based on start_pos
         current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
+        # Initialize new KV cache if none provided
         new_kv_cache_list = []
         if kv_cache is None:
-            kv_cache = [None] * len(self.blocks) # Initialize if first pass
+            kv_cache = [None] * len(self.blocks)
 
         for i, block in enumerate(self.blocks):
             x, block_kv_cache = block(x, cos, sin, attention_mask, kv_cache[i])
