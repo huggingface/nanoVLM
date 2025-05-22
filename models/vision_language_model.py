@@ -79,12 +79,6 @@ class VisionLanguageModel(nn.Module):
         initial_combined_embeds = torch.cat((image_embd, prompt_token_embeds), dim=1) # [B, T_img + T_prompt_text, D_lm]
         current_total_seq_len = initial_combined_embeds.size(1)
 
-        # 4. Prepare initial full attention mask for the combined sequence
-        #    Assuming all image tokens and initial prompt tokens are attended to.
-        #    If input_ids had its own attention_mask, it should be incorporated here.
-        #    For now, simple concatenation of 1s for image and 1s for prompt text part.
-        #    If attention_mask for input_ids was provided, it would be: torch.cat((img_mask, input_ids_attention_mask), dim=1)
-        current_full_attention_mask = torch.ones(B, current_total_seq_len, device=image_embd.device, dtype=torch.long)
         
         # Initialize KV cache for all decoder (LanguageModel) blocks
         kv_cache_list = [None] * len(self.decoder.blocks)
@@ -95,7 +89,7 @@ class VisionLanguageModel(nn.Module):
         # self.decoder.forward will return embeddings or logits based on self.decoder.cfg.lm_use_tokens
         prefill_output, kv_cache_list = self.decoder.forward(
             inputs_embeds=initial_combined_embeds,
-            attention_mask=current_full_attention_mask,
+            attention_mask=None,
             kv_cache=None, # No cache for the first pass
             start_pos=0
         )
@@ -128,16 +122,11 @@ class VisionLanguageModel(nn.Module):
             # The start_pos for the new token is the current total sequence length *before* adding this new token
             current_token_start_pos = current_total_seq_len
             current_total_seq_len += 1
-            
-            current_full_attention_mask = torch.cat(
-                (current_full_attention_mask, torch.ones(B, 1, device=current_full_attention_mask.device, dtype=torch.long)),
-                dim=1
-            )
 
             # Call decoder.forward with the new token's embedding and the updated KV cache
             decode_step_output, kv_cache_list = self.decoder.forward(
                 inputs_embeds=next_token_embed,
-                attention_mask=current_full_attention_mask,
+                attention_mask=None,
                 kv_cache=kv_cache_list, # Pass the updated cache
                 start_pos=current_token_start_pos
             )
