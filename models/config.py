@@ -38,7 +38,7 @@ class VLMConfig:
 
     vlm_load_backbone_weights: bool = True
     vlm_checkpoint_path: str = 'checkpoints/nanoVLM-222M'
-    hf_repo_name: str = 'YOUR-HF-USER-NAME-HERE/nanoVLM'
+    hf_repo_name: str = None # Change this to: 'YOUR-HF-USER-NAME-HERE/nanoVLM'
 
 
 @dataclass
