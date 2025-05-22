@@ -96,7 +96,7 @@ class VisionLanguageModel(nn.Module):
         # Store newly generated token IDs
         newly_generated_ids_list = []
 
-        # --- Decode Phase with Sampling ---
+        # --- Decode Phase with Sampling tokens one by one ---
         for _ in range(max_new_tokens):
             if greedy:
                 next_token_id = torch.argmax(current_logits, dim=-1, keepdim=True)
@@ -124,6 +124,7 @@ class VisionLanguageModel(nn.Module):
             
             last_token_output = decode_step_output[:, -1, :] 
             
+            # Apply head to get logits (if model is in embedding mode)
             if not self.decoder.lm_use_tokens:
                 current_logits = self.decoder.head(last_token_output)
             else:
