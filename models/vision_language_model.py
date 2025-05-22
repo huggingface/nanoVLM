@@ -79,17 +79,18 @@ class VisionLanguageModel(nn.Module):
             image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
         
-        # Generate from combined embeddings using the decoder
-        # We need to use the decoder's forward function and not its generate method
-        # because we want to keep track of the image prefix
+        # Initialize KV cache: List to store key and value tensors for each block
+        kv_cache = [None] * len(self.decoder.blocks)
+        
+        # Generate tokens one by one
         outputs = combined_embd
         generated_tokens = torch.zeros((batch_size, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
         
-        #Note: Here you could implement improvements like e.g. KV caching
         for i in range(max_new_tokens):
-            model_out = self.decoder(outputs, attention_mask)
+            # Pass KV cache to decoder for efficient generation
+            # model_out, kv_cache = self.decoder(outputs, attention_mask, kv_cache=kv_cache)
+            model_out, kv_cache = self.decoder(outputs, attention_mask, kv_cache=None)
             
-            # Get predictions for the last token only (normally this is the embedding, not the logits)
             last_token_logits = model_out[:, -1, :]
             
             # Apply head to get logits (if model is in embedding mode)

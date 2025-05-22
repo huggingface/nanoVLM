@@ -112,13 +112,29 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         if not self.sdpa:
             print("Warning: scaled dot product attention not available, using standard attention in LM.")
 
-    def forward(self, x, cos, sin, attention_mask=None):
+    def forward(self, x, cos, sin, attention_mask=None, kv_cache=None):
         B, T, C = x.size()
 
         q = self.q_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T, head_dim)
-        k = self.k_proj(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)  # (B, n_kv_heads, T, head_dim)
-        v = self.v_proj(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)  # (B, n_kv_heads, T, head_dim)
-        
+
+        # Check if we can use cached keys and values
+        if kv_cache is not None and kv_cache['key'] is not None:
+            k = kv_cache['key']  # (B, n_kv_heads, T_cached, head_dim)
+            v = kv_cache['value']  # (B, n_kv_heads, T_cached, head_dim)
+            # Compute keys and values for the new token only
+            new_k = self.k_proj(x[:, -1:, :]).view(B, 1, self.n_kv_heads, self.head_dim).transpose(1, 2)
+            new_v = self.v_proj(x[:, -1:, :]).view(B, 1, self.n_kv_heads, self.head_dim).transpose(1, 2)
+            # Append new keys and values to cache
+            k = torch.cat([k, new_k], dim=2)
+            v = torch.cat([v, new_v], dim=2)
+        else:
+            # Compute keys and values for all tokens
+            k = self.k_proj(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)  # (B, n_kv_heads, T, head_dim)
+            v = self.v_proj(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)  # (B, n_kv_heads, T, head_dim)
+
+        # Update KV cache
+        new_kv_cache = {'key': k, 'value': v}
+
         # Use precomputed positional embeddings
         q, k = apply_rotary_pos_embd(q, k, cos, sin)
 
@@ -127,10 +143,8 @@ class LanguageModelGroupedQueryAttention(nn.Module):
 
         # Process attention mask if provided
         if attention_mask is not None:
-            # Create a 4D attention mask [batch_size, 1, 1, seq_length], In this format, 1 = attend, 0 = mask
             attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, T]
-            padding_mask = (attention_mask == 0).transpose(-1, -2) # Use this for the manual path
-            # Convert to attention mask where 0 keeps values and -inf masks
+            padding_mask = (attention_mask == 0).transpose(-1, -2)
             attention_mask = (1.0 - attention_mask) * torch.finfo(q.dtype).min
 
         if self.sdpa:
@@ -158,7 +172,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         y = self.out_proj(y)
         y = self.resid_dropout(y)
 
-        return y
+        return y, new_kv_cache
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L160
 class LanguageModelMLP(nn.Module):
@@ -188,10 +202,10 @@ class LanguageModelBlock(nn.Module):
         self.norm1 = RMSNorm(cfg) # Input Norm
         self.norm2 = RMSNorm(cfg) # Post Attention Norm
     
-    def forward(self, x, cos, sin, attention_mask=None):
+    def forward(self, x, cos, sin, attention_mask=None, kv_cache=None):
         res = x
         x = self.norm1(x)
-        x = self.attn(x, cos, sin, attention_mask)
+        x, new_kv_cache = self.attn(x, cos, sin, attention_mask, kv_cache)
         x = res + x
 
         res = x
@@ -199,7 +213,7 @@ class LanguageModelBlock(nn.Module):
         x = self.mlp(x)
         x = res + x
 
-        return x
+        return x, new_kv_cache
 
 # https://github.com/meta-llama/llama3/blob/main/llama/model.py#L251
 class LanguageModel(nn.Module):
@@ -231,7 +245,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x, attention_mask=None):
+    def forward(self, x, attention_mask=None, kv_cache=None):
         if self.lm_use_tokens:
             x = self.token_embedding(x) # Only embed the inputs when using tokens
         
@@ -241,14 +255,22 @@ class LanguageModel(nn.Module):
         position_ids = torch.arange(T, device=x.device).unsqueeze(0).expand(B, -1) # Create position ids [0, 1, 2, ..., seq_len-1]
         cos, sin = self.rotary_embd(position_ids) # Get rotary position embeddings
 
-        for block in self.blocks:
-            x = block(x, cos, sin, attention_mask)
+        # Initialize new KV cache if none provided
+        if kv_cache is None:
+            kv_cache = [None] * len(self.blocks)
+        new_kv_cache = []
+
+        for i, block in enumerate(self.blocks):
+            x, block_kv_cache = block(x, cos, sin, attention_mask, kv_cache[i])
+            new_kv_cache.append(block_kv_cache)
+
         x = self.norm(x)
 
         if self.lm_use_tokens:
             x = self.head(x) # Compute logits if we are using tokens, otherwise stay in the embedding space
 
-        return x
+        return x, new_kv_cache
+
 
     @torch.no_grad()
     def generate(self, inputs, max_new_tokens=20):
