@@ -304,8 +304,6 @@ class LanguageModel(nn.Module):
         generated_ids = inputs.clone()
 
         kv_cache_list = [None] * len(self.blocks)
-        # current_full_attention_mask = torch.ones(B, T_prompt, device=inputs.device, dtype=torch.long)
-        
         last_token_logits = None
 
         if T_prompt > 0:
@@ -330,7 +328,6 @@ class LanguageModel(nn.Module):
         )
         last_token_logits = prompt_output[:, -1, :]
 
-
         # Decode Phase with KV cache
         for i in range(max_new_tokens):
             next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
@@ -342,9 +339,6 @@ class LanguageModel(nn.Module):
             if i == max_new_tokens - 1: 
                 break
 
-            # input_ids is the just generated `next_token`.
-            # kv_cache is the accumulated cache.
-            # start_pos is the absolute position of `next_token`.
             decode_step_output, kv_cache_list = self.forward(
                 input_ids=next_token, 
                 attention_mask=None,
