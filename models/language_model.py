@@ -308,8 +308,10 @@ class LanguageModel(nn.Module):
         # Decode Phase with KV cache
         for i in range(max_new_tokens):
             if self.lm_use_tokens:
+                # Now the model outputs logits
                 next_output = torch.argmax(last_output, dim=-1, keepdim=True)
             else:
+                # Now the model outputs embeddings
                 next_output = last_output.unsqueeze(1)
 
             generated_outputs = torch.cat((generated_outputs, next_output), dim=1)
