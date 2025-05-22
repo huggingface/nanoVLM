@@ -31,33 +31,36 @@ class VisionLanguageModel(nn.Module):
         self.load_backbone = load_backbone
 
     def forward(self, input_ids, image, attention_mask=None, targets=None):
+        # Encode image and text separately
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
-
         token_embd = self.decoder.token_embedding(input_ids)
 
-        combined_embd = torch.cat((image_embd, token_embd), dim=1) # Concatenate image embeddings to token embeddings
+        # Concatenate image embeddings to token embeddings
+        combined_embd = torch.cat((image_embd, token_embd), dim=1)
         
         # Adjust attention mask to account for image tokens
         if attention_mask is not None:
-            # Create mask of 1s for image tokens (all image tokens should be attended to)
             batch_size = image_embd.size(0)
             img_seq_len = image_embd.size(1)
             image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
-            
-            # Combine image and token attention masks
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
 
-        logits = self.decoder(combined_embd, attention_mask) # Not logits yet, but easier to return like this
+        # Pass through decoder (returns hidden states if lm_use_tokens=False or logits if True)
+        output_from_decoder = self.decoder(combined_embd, attention_mask=attention_mask, use_cache=False) 
 
         loss = None
         if targets is not None:
-            # Only use the token part of the logits for loss computation
-            logits = self.decoder.head(logits)
+            # Apply head to get logits if decoder returned hidden states
+            logits = output_from_decoder
+            if not self.decoder.lm_use_tokens:
+                logits = self.decoder.head(logits)
+            
+            # Use only the token part for loss computation
             logits = logits[:, image_embd.size(1):, :]
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
-
-        return logits, loss
+        
+        return output_from_decoder, loss
 
     @torch.no_grad()
     def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
@@ -69,48 +72,67 @@ class VisionLanguageModel(nn.Module):
         token_embd = self.decoder.token_embedding(input_ids)
         
         # Concatenate image embeddings with token embeddings
-        combined_embd = torch.cat((image_embd, token_embd), dim=1)
+        initial_embeddings = torch.cat((image_embd, token_embd), dim=1)
 
-        batch_size = image_embd.size(0)
-        img_seq_len = image_embd.size(1)
-        # Adjust attention mask to account for image tokens
-        if attention_mask is not None:
-            # Create mask of 1s for image tokens (all image tokens should be attended to)
-            image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
-            attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
+        batch_size = initial_embeddings.size(0)
+        prompt_len = initial_embeddings.size(1)
         
-        # Generate from combined embeddings using the decoder
-        # We need to use the decoder's forward function and not its generate method
-        # because we want to keep track of the image prefix
-        outputs = combined_embd
+        # Prepare attention mask for the initial prompt processing
+        prompt_attention_mask = None
+        if attention_mask is not None:
+            image_attention_mask = torch.ones((batch_size, image_embd.size(1)), device=attention_mask.device, dtype=attention_mask.dtype)
+            prompt_attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
+        
+        # Initialize KV cache for each block in the decoder
+        kv_caches = [None] * len(self.decoder.blocks)
+        
+        # Process initial prompt sequence to populate the KV cache
+        prompt_pos_ids = torch.arange(prompt_len, device=initial_embeddings.device).unsqueeze(0).expand(batch_size, -1)
+        prompt_cos, prompt_sin = self.decoder.rotary_embd(prompt_pos_ids)
+        
+        # Pass initial embeddings through all blocks to get hidden states
+        current_hidden_states = initial_embeddings
+        for i, block in enumerate(self.decoder.blocks):
+            current_hidden_states, kv_caches[i] = block(current_hidden_states, prompt_cos, prompt_sin, prompt_attention_mask, None, True)
+        
+        # Get final hidden state of the prompt for the first token prediction
+        prompt_last_hidden = self.decoder.norm(current_hidden_states[:, -1, :])  # [B, C]
+
+        # Initialize tensor to store generated token IDs
         generated_tokens = torch.zeros((batch_size, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
         
-        #Note: Here you could implement improvements like e.g. KV caching
-        for i in range(max_new_tokens):
-            model_out = self.decoder(outputs, attention_mask)
-            
-            # Get predictions for the last token only (normally this is the embedding, not the logits)
-            last_token_logits = model_out[:, -1, :]
-            
-            # Apply head to get logits (if model is in embedding mode)
-            if not self.decoder.lm_use_tokens:
-                last_token_logits = self.decoder.head(last_token_logits)
-            if greedy:
-                next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
-            else:
-                filtered_logits = top_k_top_p_filtering(last_token_logits, top_k=top_k, top_p=top_p)
-                probs = torch.softmax(filtered_logits/temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-            generated_tokens[:, i] = next_token.squeeze(-1)
-            
-            # Convert to embedding and append
-            next_embd = self.decoder.token_embedding(next_token)
-            outputs = torch.cat((outputs, next_embd), dim=1)
+        # Store embeddings between generation steps
+        next_token_embeddings = None
 
-            if attention_mask is not None:
-                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device)), dim=1)
-        
+        for k in range(max_new_tokens):
+            if k == 0:
+                # For first new token, use last hidden state from prompt
+                current_logits = self.decoder.head(prompt_last_hidden)
+            else:
+                # For subsequent tokens, use embedding of previous token
+                current_input = next_token_embeddings  # [B, 1, C]
+                
+                # Get position for the current token
+                pos_id = torch.tensor([[prompt_len + k - 1]], device=initial_embeddings.device).expand(batch_size, -1)
+                cos, sin = self.decoder.rotary_embd(pos_id)
+                
+                # Process current token through blocks with KV cache
+                hidden_state = current_input
+                for i, block in enumerate(self.decoder.blocks):
+                    hidden_state, kv_caches[i] = block(hidden_state, cos, sin, None, kv_caches[i], True)
+                
+                # Get normalized hidden state
+                hidden_state_normed = self.decoder.norm(hidden_state)
+                current_logits = self.decoder.head(hidden_state_normed.squeeze(1))
+
+            # Sample next token
+            probs = F.softmax(current_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            generated_tokens[:, k] = next_token.squeeze(-1)
+            
+            # Get embedding for next iteration
+            next_token_embeddings = self.decoder.token_embedding(next_token)
+            
         return generated_tokens
 
     @classmethod

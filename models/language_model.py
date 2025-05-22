@@ -135,6 +135,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         v = v.repeat_interleave(self.n_kv_groups, dim=1)
 
         # Process attention mask if provided
+        padding_mask = None
         if attention_mask is not None:
             # Create a 4D attention mask [batch_size, 1, 1, seq_length], In this format, 1 = attend, 0 = mask
             attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, T]
@@ -143,15 +144,34 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             attention_mask = (1.0 - attention_mask) * torch.finfo(q.dtype).min
 
         if self.sdpa:
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attention_mask,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True # LM attention is causal (masked)
-            )
+            # We can't use both is_causal and attention_mask, so we need to handle them separately
+            if attention_mask is not None:
+                # If we have a padding mask, we need to handle causality manually
+                causal_mask = torch.triu(torch.ones(T, k.size(-2), device=x.device, dtype=torch.bool), diagonal=1)
+                causal_mask = causal_mask.unsqueeze(0).unsqueeze(1)  # [1, 1, T, S]
+                
+                # Combine causal and padding masks
+                combined_mask = torch.zeros_like(causal_mask, dtype=torch.float)
+                combined_mask.masked_fill_(causal_mask, float('-inf'))
+                combined_mask = combined_mask + attention_mask
+                
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=combined_mask,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=False
+                )
+            else:
+                # Without a padding mask, we can use is_causal
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=True
+                )
         else:
             attn = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.head_dim)
-            causal_mask = torch.tril(torch.ones(T, T, device=x.device)).view(1, 1, T, T)
+            causal_mask = torch.tril(torch.ones(T, k.size(-2), device=x.device)).view(1, 1, T, k.size(-2))
             attn = attn.masked_fill(causal_mask == 0, float('-inf'))
             if attention_mask is not None:
                 attn = attn + attention_mask 
@@ -160,7 +180,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             attn = self.attn_dropout(attn)
             y = attn @ v
             
-            if attention_mask is not None:
+            if padding_mask is not None:
                 y = y.masked_fill(padding_mask, 0.0) # Zero out the padded positions in the output
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)  
@@ -265,25 +285,74 @@ class LanguageModel(nn.Module):
         if inputs.dim() == 1:
             inputs = inputs.unsqueeze(0)
             
-        generated = inputs.clone()
+        batch_size = inputs.shape[0]
+        initial_seq_len = inputs.size(1)
+
+        # Get initial embeddings
+        if self.lm_use_tokens:
+            prompt_embeddings = self.token_embedding(inputs)
+            generated_outputs = inputs.clone()
+            current_input_for_blocks = prompt_embeddings
+        else:
+            prompt_embeddings = inputs.clone()
+            generated_outputs = inputs.clone()
+            current_input_for_blocks = prompt_embeddings
+
+        # Initialize KV caches
+        kv_caches = [None] * len(self.blocks)
         
-        for _ in range(max_new_tokens):
-            # Forward pass through the model
-            outputs = self.forward(generated)
-            last_output = outputs[:, -1, :]
+        # Process prompt to populate KV cache
+        position_ids_prompt = torch.arange(initial_seq_len, device=inputs.device).unsqueeze(0).expand(batch_size, -1)
+        cos_prompt, sin_prompt = self.rotary_embd(position_ids_prompt)
+        
+        hidden_states_after_prompt_blocks = current_input_for_blocks
+        for i, block_module in enumerate(self.blocks):
+            hidden_states_after_prompt_blocks, kv_caches[i] = block_module(
+                hidden_states_after_prompt_blocks, 
+                cos_prompt, sin_prompt, 
+                attention_mask=None,
+                kv_cache=None,
+                use_cache=True
+            )
+        
+        # Get last token's hidden state from prompt
+        last_hidden_state_normed_from_prompt = self.norm(hidden_states_after_prompt_blocks[:, -1:, :])
+        current_token_block_input = last_hidden_state_normed_from_prompt
+
+        # Generate new tokens
+        for i in range(max_new_tokens):
+            current_absolute_position = initial_seq_len + i
+            position_id_new_token = torch.full((batch_size, 1), current_absolute_position, device=inputs.device)
+            cos_new_token, sin_new_token = self.rotary_embd(position_id_new_token)
+            
+            # Process current token through blocks
+            hidden_state_after_blocks_curr_token = current_token_block_input 
+            for j, block_module in enumerate(self.blocks):
+                hidden_state_after_blocks_curr_token, kv_caches[j] = block_module(
+                    hidden_state_after_blocks_curr_token, 
+                    cos_new_token, sin_new_token, 
+                    attention_mask=None, 
+                    kv_cache=kv_caches[j], 
+                    use_cache=True
+                )
+            
+            current_token_hidden_state_normed = self.norm(hidden_state_after_blocks_curr_token)
 
             if self.lm_use_tokens:
-                # Now the model outputs logits
-                next_token = torch.argmax(last_output, dim=-1, keepdim=True)
-                generated = torch.cat((generated, next_token), dim=-1)
+                # Get next token from logits
+                logits = self.head(current_token_hidden_state_normed.squeeze(1))
+                next_token_ids = torch.argmax(logits, dim=-1, keepdim=True)
+                generated_outputs = torch.cat((generated_outputs, next_token_ids), dim=1)
+                
+                # Use token embedding for next iteration
+                current_token_block_input = self.token_embedding(next_token_ids)
             else:
-                # Now the model outputs embeddings
-                next_token_embedding = last_output.unsqueeze(1)  # Shape: [batch_size, 1, hidden_dim]
-                generated = torch.cat((generated, next_token_embedding), dim=1)
-            
-            #Note: You could enable the generation to break earlier than max_new_tokens when it detects a eos token, but this does not work in batched generation (output tensors need to have the same size)
-    
-        return generated
+                # Use hidden state as next embedding
+                next_generated_embedding = current_token_hidden_state_normed
+                generated_outputs = torch.cat((generated_outputs, next_generated_embedding), dim=1)
+                current_token_block_input = next_generated_embedding
+        
+        return generated_outputs
 
     # Load the model from a pretrained HuggingFace model (we don't want to have to train the Language Backbone from scratch)
     @classmethod
