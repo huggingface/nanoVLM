@@ -88,8 +88,7 @@ class VisionLanguageModel(nn.Module):
         
         for i in range(max_new_tokens):
             # Pass KV cache to decoder for efficient generation
-            # model_out, kv_cache = self.decoder(outputs, attention_mask, kv_cache=kv_cache)
-            model_out, kv_cache = self.decoder(outputs, attention_mask, kv_cache=None)
+            model_out, kv_cache = self.decoder(outputs, attention_mask, kv_cache=kv_cache)
             
             last_token_logits = model_out[:, -1, :]
             
