@@ -86,7 +86,7 @@ Generation 1:  This is a cat sitting on the ground. I think this is a cat sittin
 Generation 2:  This picture is clicked outside. In the center there is a brown color cat seems to be sitting on
 Generation 3:  This is a cat sitting on the ground, which is of white and brown in color. This cat
 Generation 4:  This is a cat sitting on the ground. I think this is a cat sitting on the ground.
-Generation 5:  This is a cat sitting on the ground, which is covered with a mat. I think this is```
+Generation 5:  This is a cat sitting on the ground, which is covered with a mat. I think this is
 ```
 
 ## Hub integration
