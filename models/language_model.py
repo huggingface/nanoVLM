@@ -286,8 +286,7 @@ class LanguageModel(nn.Module):
 
         x = self.norm(x)
 
-        # If lm_use_tokens is True (controlled by VLMConfig for the LM part), apply the head.
-        # This allows VLM to get embeddings from LM, or logits if lm_use_tokens=True.
+        # Compute logits if we are using tokens, otherwise stay in the embedding space
         if self.cfg.lm_use_tokens: 
             x = self.head(x) 
 
