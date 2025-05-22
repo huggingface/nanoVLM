@@ -122,6 +122,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # Apply rotary embeddings to the current q and k
         q, k_rotated = apply_rotary_pos_embd(q_curr, k_curr, cos, sin)
 
+        # Check if we can use cached keys and values
         if kv_cache is not None and kv_cache['key'] is not None:
             # Concatenate with cached K, V
             # k_rotated and v_curr are for the new token(s)
