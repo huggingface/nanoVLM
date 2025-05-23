@@ -128,10 +128,10 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         if not is_prefill and block_kv_cache['key'] is not None:
             # Concatenate with cached K, V
             # k_rotated and v_curr are for the new token(s)
-            k_past = block_kv_cache['key']
-            v_past = block_kv_cache['value']
-            k = torch.cat([k_past, k_rotated], dim=2)
-            v = torch.cat([v_past, v_curr], dim=2)
+            k = block_kv_cache['key']
+            v = block_kv_cache['value']
+            k = torch.cat([k, k_rotated], dim=2)
+            v = torch.cat([v, v_curr], dim=2)
             block_kv_cache['key'] = k
             block_kv_cache['value'] = v
         else:
