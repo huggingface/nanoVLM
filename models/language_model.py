@@ -133,7 +133,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             # Convert to attention mask where 0 keeps values and -inf masks
             attention_mask = (1.0 - attention_mask) * torch.finfo(q.dtype).min
 
-        if self.sdpa:
+        if self.sdpa and x.device.type != 'mps':
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attention_mask,
