@@ -14,7 +14,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 def generate_tokens(tokens, image):
-    gen = model.generate(tokens, image, max_new_tokens=100)
+    gen = model.generate(tokens, image, max_new_tokens=1000)
 
 if __name__ == "__main__":
     model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-222M").to(device)

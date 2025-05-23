@@ -112,7 +112,9 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         if not self.sdpa:
             print("Warning: scaled dot product attention not available, using standard attention in LM.")
 
-    def forward(self, x, cos, sin, attention_mask=None, kv_cache=None):
+    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
+        is_prefill = block_kv_cache is None
+
         B, T_curr, C = x.size() # T_curr is the sequence length of the current input x
 
         q_curr = self.q_proj(x).view(B, T_curr, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T_curr, head_dim)
@@ -123,19 +125,20 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         q, k_rotated = apply_rotary_pos_embd(q_curr, k_curr, cos, sin)
 
         # Check if we can use cached keys and values
-        if kv_cache is not None and kv_cache['key'] is not None:
+        if not is_prefill and block_kv_cache['key'] is not None:
             # Concatenate with cached K, V
             # k_rotated and v_curr are for the new token(s)
-            k_past = kv_cache['key']
-            v_past = kv_cache['value']
+            k_past = block_kv_cache['key']
+            v_past = block_kv_cache['value']
             k = torch.cat([k_past, k_rotated], dim=2)
             v = torch.cat([v_past, v_curr], dim=2)
+            block_kv_cache['key'] = k
+            block_kv_cache['value'] = v
         else:
             # No cache, this is the first pass (prefill)
             k = k_rotated
             v = v_curr
-        
-        new_kv_cache = {'key': k, 'value': v}
+            block_kv_cache = {'key': k, 'value': v}
 
         # Repeat K, V for Grouped Query Attention
         k_exp = k.repeat_interleave(self.n_kv_groups, dim=1) # (B, n_heads, T_kv, head_dim)
@@ -154,7 +157,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             # This additive_attn_mask shape is [B, 1, 1, T_kv]
 
         if self.sdpa:
-            is_causal_sdpa = (kv_cache is None and T_curr > 1) # True only for prefill of a sequence
+            is_causal_sdpa = (is_prefill and T_curr > 1) # True only for prefill of a sequence
                                                             # Not for single token decode, even if T_curr=1 then
             
             # When T_curr=1 (decode) and T_kv > 1, is_causal_sdpa is False.
@@ -171,7 +174,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             attn = torch.matmul(q, k_exp.transpose(2, 3)) / math.sqrt(self.head_dim) # (B, n_heads, T_curr, T_kv)
             
             # Causal mask for prefill where T_curr == T_kv and T_curr > 1
-            if kv_cache is None and T_curr > 1 and T_curr == T_kv:
+            if is_prefill and T_curr > 1 and T_curr == T_kv:
                 # This creates a lower triangular mask for square attention (prefill)
                 causal_mask_val = torch.tril(torch.ones(T_curr, T_curr, device=x.device, dtype=torch.bool)).view(1, 1, T_curr, T_curr)
                 attn = attn.masked_fill(~causal_mask_val, float('-inf'))
@@ -188,7 +191,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         y = self.out_proj(y)
         y = self.resid_dropout(y)
 
-        return y, new_kv_cache
+        return y, block_kv_cache
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L160
 class LanguageModelMLP(nn.Module):
@@ -218,10 +221,10 @@ class LanguageModelBlock(nn.Module):
         self.norm1 = RMSNorm(cfg) # Input Norm
         self.norm2 = RMSNorm(cfg) # Post Attention Norm
     
-    def forward(self, x, cos, sin, attention_mask=None, kv_cache=None):
+    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
         res = x
         x = self.norm1(x)
-        x, new_kv_cache = self.attn(x, cos, sin, attention_mask, kv_cache)
+        x, block_kv_cache = self.attn(x, cos, sin, attention_mask, block_kv_cache)
         x = res + x
 
         res = x
@@ -229,7 +232,7 @@ class LanguageModelBlock(nn.Module):
         x = self.mlp(x)
         x = res + x
 
-        return x, new_kv_cache
+        return x, block_kv_cache
 
 # https://github.com/meta-llama/llama3/blob/main/llama/model.py#L251
 class LanguageModel(nn.Module):
@@ -273,13 +276,11 @@ class LanguageModel(nn.Module):
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
         # Initialize new KV cache if none provided
-        new_kv_cache_list = []
         if kv_cache is None:
             kv_cache = [None] * len(self.blocks)
 
         for i, block in enumerate(self.blocks):
-            x, block_kv_cache = block(x, cos, sin, attention_mask, kv_cache[i])
-            new_kv_cache_list.append(block_kv_cache)
+            x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i])
 
         x = self.norm(x)
 
@@ -287,7 +288,7 @@ class LanguageModel(nn.Module):
         if self.lm_use_tokens: 
             x = self.head(x) 
 
-        return x, new_kv_cache_list
+        return x, kv_cache
 
 
     @torch.inference_mode()
