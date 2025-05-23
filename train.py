@@ -285,7 +285,7 @@ def train(train_cfg, vlm_cfg):
 
             if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
                 if train_cfg.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
 
                 adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
                 adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
@@ -346,8 +346,11 @@ def train(train_cfg, vlm_cfg):
                 model.train()          
 
             if train_cfg.log_wandb and is_master():
-                run.log({"batch_loss": batch_loss,
-                         "tokens_per_second": tokens_per_second}, step=global_step)
+                run.log({
+                    "batch_loss": batch_loss,
+                    "tokens_per_second": tokens_per_second,
+                    **({"grad_norm": grad_norm} if train_cfg.max_grad_norm is not None else {})
+                }, step=global_step)
                 
             if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
                 global_step += 1
