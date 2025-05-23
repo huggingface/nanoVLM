@@ -79,7 +79,7 @@ class VisionLanguageModel(nn.Module):
         current_total_seq_len = initial_combined_embeds.size(1)
         
         # --- Multimodal Prefill Phase ---
-        prefill_output, kv_cache_list = self.decoder.forward(
+        prefill_output, kv_cache_list = self.decoder(
             initial_combined_embeds,
             attention_mask=None,
             kv_cache=None,
