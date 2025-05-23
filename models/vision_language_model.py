@@ -115,7 +115,7 @@ class VisionLanguageModel(nn.Module):
             current_total_seq_len += 1
 
             # Call decoder.forward with the new token's embedding and the updated KV cache
-            decode_step_output, kv_cache_list = self.decoder.forward(
+            decode_step_output, kv_cache_list = self.decoder(
                 next_token_embed,
                 attention_mask=None, # Autoregressive, so no explicit mask beyond KV cache structure
                 kv_cache=kv_cache_list, # Pass the updated cache
