@@ -59,59 +59,81 @@ class VisionLanguageModel(nn.Module):
 
         return logits, loss
 
-    @torch.no_grad()
-    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
-        # Process image through vision encoder and projection
-        image_embd = self.vision_encoder(image)
-        image_embd = self.MP(image_embd)
-        
-        # Embed initial tokens
-        token_embd = self.decoder.token_embedding(input_ids)
-        
-        # Concatenate image embeddings with token embeddings
-        combined_embd = torch.cat((image_embd, token_embd), dim=1)
+    @torch.inference_mode()
+    def generate(self, input_ids, image, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
+        # input_ids: [B, T_prompt_text]
+        # image: [B, C, H, W]
+        # max_new_tokens: int, maximum number of tokens to generate
 
-        batch_size = image_embd.size(0)
-        img_seq_len = image_embd.size(1)
-        # Adjust attention mask to account for image tokens
-        if attention_mask is not None:
-            # Create mask of 1s for image tokens (all image tokens should be attended to)
-            image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
-            attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
+        B = image.size(0)
+
+        # 1. Process image
+        image_embd = self.vision_encoder(image) # [B, T_img, D_model]
+        image_embd = self.MP(image_embd)      # [B, T_img, D_lm]
+
+        # 2. Embed initial text prompt tokens
+        prompt_token_embeds = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
+
+        # 3. Combine image and text prompt embeddings for prefill
+        initial_combined_embeds = torch.cat((image_embd, prompt_token_embeds), dim=1) # [B, T_img + T_prompt_text, D_lm]
+        current_total_seq_len = initial_combined_embeds.size(1)
         
-        # Initialize KV cache: List to store key and value tensors for each block
-        kv_cache = [None] * len(self.decoder.blocks)
+        # --- Multimodal Prefill Phase ---
+        prefill_output, kv_cache_list = self.decoder.forward(
+            initial_combined_embeds,
+            attention_mask=None,
+            kv_cache=None,
+            start_pos=0
+        )
         
-        # Generate tokens one by one
-        outputs = combined_embd
-        generated_tokens = torch.zeros((batch_size, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
+        last_token_output_from_prefill = prefill_output[:, -1, :] 
         
-        for i in range(max_new_tokens):
-            # Pass KV cache to decoder for efficient generation
-            model_out, kv_cache = self.decoder(outputs, attention_mask, kv_cache=kv_cache)
+        if not self.decoder.lm_use_tokens:
+            current_logits = self.decoder.head(last_token_output_from_prefill) 
+        else:
+            current_logits = last_token_output_from_prefill 
+
+        # Store newly generated token IDs
+        newly_generated_ids_list = []
+
+        # --- Decode Phase with Sampling tokens one by one ---
+        for _ in range(max_new_tokens):
+            if greedy:
+                next_token_id = torch.argmax(current_logits, dim=-1, keepdim=True)
+            else:
+                filtered_logits = top_k_top_p_filtering(current_logits, top_k=top_k, top_p=top_p)
+                probs = torch.softmax(filtered_logits / temperature, dim=-1)
+                next_token_id = torch.multinomial(probs, num_samples=1)
             
-            last_token_logits = model_out[:, -1, :]
+            newly_generated_ids_list.append(next_token_id)
+            
+            # Embed the newly generated token
+            next_token_embed = self.decoder.token_embedding(next_token_id) # [B, 1, D_lm]
+            
+            # The start_pos for the new token is the current total sequence length *before* adding this new token
+            current_token_start_pos = current_total_seq_len
+            current_total_seq_len += 1
+
+            # Call decoder.forward with the new token's embedding and the updated KV cache
+            decode_step_output, kv_cache_list = self.decoder.forward(
+                next_token_embed,
+                attention_mask=None, # Autoregressive, so no explicit mask beyond KV cache structure
+                kv_cache=kv_cache_list, # Pass the updated cache
+                start_pos=current_token_start_pos
+            )
+            
+            last_token_output = decode_step_output[:, -1, :] 
             
             # Apply head to get logits (if model is in embedding mode)
             if not self.decoder.lm_use_tokens:
-                last_token_logits = self.decoder.head(last_token_logits)
-            if greedy:
-                next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
+                current_logits = self.decoder.head(last_token_output)
             else:
-                filtered_logits = top_k_top_p_filtering(last_token_logits, top_k=top_k, top_p=top_p)
-                probs = torch.softmax(filtered_logits/temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-            generated_tokens[:, i] = next_token.squeeze(-1)
-            
-            # Convert to embedding and append
-            next_embd = self.decoder.token_embedding(next_token)
-            outputs = torch.cat((outputs, next_embd), dim=1)
-
-            if attention_mask is not None:
-                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device)), dim=1)
+                current_logits = last_token_output
         
-        return generated_tokens
+        if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
+             return torch.empty((B,0), dtype=torch.long, device=input_ids.device)
+
+        return torch.cat(newly_generated_ids_list, dim=1)
 
     @classmethod
     def from_pretrained(
