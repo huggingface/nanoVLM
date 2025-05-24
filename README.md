@@ -4,7 +4,14 @@
 
 <a target="_blank" href="https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
-</a>  
+</a>
+
+---
+
+> [!TIP]
+> We have written a [tutorial on nanoVLM](https://huggingface.co/blog/nanovlm) which will guide you through the repository and help you get started in no time.
+
+---
 
 nanoVLM is the simplest repository for training/finetuning a small sized Vision-Language Model with a lightweight implementation in pure PyTorch. The code itself is very readable and approachable, the model consists of a Vision Backbone (`models/vision_transformer.py` ~150 lines), Language Decoder (`models/language_model.py` ~250 lines), Modality Projection (`models/modality_projection.py` ~50 lines) and the VLM itself (`models/vision_language_model.py` ~100 lines) and a simple training loop (`train.py` ~200 lines).
 
@@ -58,9 +65,10 @@ Dependencies:
 
 ## Training
 
-To train nanoVLM, you can simply use the provided training script
+To train nanoVLM, you can simply use the provided training script. After training, your model gets uploaded to the Hub!
 ```bash
 wandb login --relogin
+huggingface-cli login
 python train.py
 ```
 which will use the default `models/config.py`.
@@ -80,12 +88,13 @@ If we feed the example image in `assets/image.png` with a question into the mode
 ```
 Input: 
 Image + 'What is this?'
-Output:
-Generation 1:  This is a cat sitting on the floor. I think this is a cat sat facing towards the left
-Generation 2:  The picture contains a white and brown cat sitting on the floor, platform, it is measuring 1
-Generation 3:  This is a cat which is sitting on the floor of the house. This cat wore a black and
-Generation 4:  This is a cute cat sitting on the surface of the mat. The background, which is blur,
-Generation 5:  This is a cat sitting on a rug, which is on the ground. The cat is in brown
+
+Outputs:
+Generation 1:  This is a cat sitting on the ground. I think this is a cat sitting on the ground.
+Generation 2:  This picture is clicked outside. In the center there is a brown color cat seems to be sitting on
+Generation 3:  This is a cat sitting on the ground, which is of white and brown in color. This cat
+Generation 4:  This is a cat sitting on the ground. I think this is a cat sitting on the ground.
+Generation 5:  This is a cat sitting on the ground, which is covered with a mat. I think this is
 ```
 
 ## Hub integration

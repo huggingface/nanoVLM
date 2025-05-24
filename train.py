@@ -29,6 +29,11 @@ import models.utils as utils
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    numpy.random.seed(worker_seed)
+    random.seed(worker_seed)
+
 def init_dist():
     dist.init_process_group(backend='nccl')
     torch.cuda.set_device(dist.get_rank())
@@ -108,11 +113,6 @@ def get_dataloaders(train_cfg, vlm_cfg):
     # Create collators
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)
     mmstar_collator = MMStarCollator(tokenizer)
-
-    def seed_worker(worker_id):
-        worker_seed = torch.initial_seed() % 2**32
-        numpy.random.seed(worker_seed)
-        random.seed(worker_seed)
 
     g = torch.Generator()
     g.manual_seed(0)
@@ -240,15 +240,27 @@ def train(train_cfg, vlm_cfg):
         print(f"Validation summary{' (global)' if is_dist() else ''}: {len(val_loader.dataset)} samples, {int(len(val_loader)*get_world_size())} batches/epoch, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
         if is_dist():
             print(f"Validation summary per GPU: {len(val_loader)} batches/epoch, batch size {val_loader.batch_size}")
+
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train them with the same learning rate
     # You could opt to fully freeze the backbones and only train the MP layer, but finetuning them with a lower learning rate makes the training as a whole easier
-    param_groups = [{'params': model.MP.parameters(), 'lr': train_cfg.lr_mp},
+    param_groups = [{'params': list(model.MP.parameters()), 'lr': train_cfg.lr_mp},
                     {'params': list(model.decoder.parameters()) + list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_backbones}]
     optimizer = optim.AdamW(param_groups)
+    all_params = [p for group in optimizer.param_groups for p in group['params']]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = (
+        torch.device("cuda") if torch.cuda.is_available()
+        else torch.device("mps") if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        else torch.device("cpu")
+    )
+    if device.type == "mps":
+        torch.backends.mps.enable_fallback_to_cpu = True
+        torch.mps.empty_cache()
+    
+    print(f"Using device: {device}")
     model.to(device)
+    
     if train_cfg.compile:
         model = torch.compile(model)
     if is_dist():
@@ -284,7 +296,12 @@ def train(train_cfg, vlm_cfg):
             else:
                 context = contextlib.nullcontext()
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16): # Set to float16 if your hardware doesn't support bfloat16ß
+            autocast_context = torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16 if device.type in ['cuda', 'cpu'] else torch.float16
+            )
+            with autocast_context:
+
                 with context:
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
@@ -294,6 +311,9 @@ def train(train_cfg, vlm_cfg):
             loss.backward()
 
             if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
+                if train_cfg.max_grad_norm is not None:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
+
                 adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs)
                 adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs)
                 optimizer.param_groups[0]['lr'] = adj_lr_mp
@@ -320,7 +340,8 @@ def train(train_cfg, vlm_cfg):
 
             if train_cfg.eval_in_epochs and global_step % train_cfg.eval_interval == 0: #and is_master():
                 model.eval()
-                torch.cuda.empty_cache()  # Clear GPU memory
+                if device == "cuda":
+                    torch.cuda.empty_cache()
                 with torch.no_grad():
                     total_val_loss = 0
                     for batch in val_loader:
@@ -329,7 +350,7 @@ def train(train_cfg, vlm_cfg):
                         labels = batch["labels"].to(device)
                         attention_mask = batch["attention_mask"].to(device)
 
-                        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        with autocast_context:
                             _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
                         total_val_loss += loss.item()
@@ -344,7 +365,8 @@ def train(train_cfg, vlm_cfg):
                         if epoch_accuracy > best_accuracy:
                             best_accuracy = epoch_accuracy
                             eval_model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
-                        run.log({"accuracy": epoch_accuracy}, step=global_step)
+                        if train_cfg.log_wandb and is_master():    
+                            run.log({"accuracy": epoch_accuracy}, step=global_step)
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                     elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
@@ -352,8 +374,11 @@ def train(train_cfg, vlm_cfg):
                 model.train()          
 
             if train_cfg.log_wandb and is_master():
-                run.log({"batch_loss": batch_loss,
-                         "tokens_per_second": tokens_per_second}, step=global_step)
+                run.log({
+                    "batch_loss": batch_loss,
+                    "tokens_per_second": tokens_per_second,
+                    **({"grad_norm": grad_norm} if train_cfg.max_grad_norm is not None else {})
+                }, step=global_step)
                 
             if (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader):
                 global_step += 1
@@ -387,14 +412,16 @@ def train(train_cfg, vlm_cfg):
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
 
-        # unwrap the model for eval if DDP
-        accuracy = test_mmstar(model.module if is_dist() else model, tokenizer, test_loader, device)
-        print(f"MMStar Accuracy: {accuracy:.4f}")
+        # Push the best model to the hub (Please set your user name in the config!)
+        if vlm_cfg.hf_repo_name is not None:
+            print("Training complete. Pushing model to Hugging Face Hub...")
+            hf_model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
+            hf_model.push_to_hub(vlm_cfg.hf_repo_name)
 
         if train_cfg.log_wandb:
             run.summary["avg_epoch_time"] = avg_epoch_time
             run.summary["avg_time_per_sample"] = avg_time_per_sample
-            run.summary["mmstar_acc"] = accuracy
+            run.summary["mmstar_acc"] = best_accuracy
             run.finish()
 
 def main():
@@ -402,8 +429,8 @@ def main():
     parser.add_argument('--lr_mp', type=float, help='Learning rate for the mapping network')
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
     parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
+    parser.add_argument('--compile', type=bool, help='Use torch.compile to optimize the model')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
-    parser.add_argument('--compile', type=bool, default=False, help='Use torch.compile to optimize the model')
 
     args = parser.parse_args()
 
