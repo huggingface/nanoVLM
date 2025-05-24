@@ -428,5 +428,13 @@ def main():
     if is_dist():
         destroy_dist()
 
+def test_thing():
+    
+    vlm_cfg = config.VLMConfig()
+    train_cfg = config.TrainConfig()
+    print(train_cfg)
+    print(vlm_cfg)
+
 if __name__ == "__main__":
-    main()
+    #main()
+    test_thing()

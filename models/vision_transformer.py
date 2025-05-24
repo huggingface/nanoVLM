@@ -8,12 +8,12 @@ class ViTPatchEmbeddings(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        self.img_size = cfg.vit_img_size
-        self.patch_size = cfg.vit_patch_size
-        self.num_patches = (self.img_size // self.patch_size) ** 2
-        self.cls_flag = cfg.vit_cls_flag
-        self.embd_dim = cfg.vit_hidden_dim
-
+        self.img_size = cfg.vit_img_size # 224
+        self.patch_size = cfg.vit_patch_size # 16
+        self.num_patches = (self.img_size // self.patch_size) ** 2 # 196 = sequence length
+        self.cls_flag = cfg.vit_cls_flag # False
+        self.embd_dim = cfg.vit_hidden_dim  # 768
+ 
         # Conv layer to extract the patches
         self.conv = nn.Conv2d(
             in_channels=3,
@@ -31,8 +31,8 @@ class ViTPatchEmbeddings(nn.Module):
 
 
     def forward(self, x):
-        x = self.conv(x)  # extract patches
-        x = x.flatten(2)  # flatten the patches into a single dimension
+        x = self.conv(x)  # extract patches return [batch_size, embd_dim, patch_size, patch_size]
+        x = x.flatten(2)  # flatten the patches into a single dimension return [batch_size, embd_dim, num_patches]
         x = x.transpose(1, 2)  # transpose to (batch_size, num_patches, hidden_dim)
 
         # Add CLS token (according to original ViT Paper) and position embeddings
@@ -40,7 +40,7 @@ class ViTPatchEmbeddings(nn.Module):
             cls_token = self.cls_token.expand(x.shape[0], -1, -1)
             x = torch.cat((cls_token, x), dim=1)
         x = x + self.position_embedding
-        return x
+        return x  # [batch_size, num_patches + 1, hidden_dim] if cls_flag else [batch_size, num_patches, hidden_dim]
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/siglip/modeling_siglip.py#L381
 # https://github.com/karpathy/nanoGPT/blob/master/model.py#L29
@@ -48,11 +48,11 @@ class ViTMultiHeadAttention(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        self.n_heads = cfg.vit_n_heads
-        self.embd_dim = cfg.vit_hidden_dim
+        self.n_heads = cfg.vit_n_heads # 12
+        self.embd_dim = cfg.vit_hidden_dim # 768
         assert self.embd_dim % self.n_heads == 0, "embd_dim must be divisible by num_heads"
-        self.head_dim = self.embd_dim // self.n_heads
-        self.dropout = cfg.vit_dropout
+        self.head_dim = self.embd_dim // self.n_heads # 64
+        self.dropout = cfg.vit_dropout 
 
         # Combined projections for all heads
         self.qkv_proj = nn.Linear(self.embd_dim, 3 * self.embd_dim, bias=True)
@@ -102,8 +102,8 @@ class ViTMLP(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.activation_fn = nn.GELU(approximate='tanh')
-        self.fc1 = nn.Linear(cfg.vit_hidden_dim, cfg.vit_inter_dim)
-        self.fc2 = nn.Linear(cfg.vit_inter_dim, cfg.vit_hidden_dim)
+        self.fc1 = nn.Linear(cfg.vit_hidden_dim, cfg.vit_inter_dim) # 768, 3072
+        self.fc2 = nn.Linear(cfg.vit_inter_dim, cfg.vit_hidden_dim) # 3072, 768
         self.dropout = nn.Dropout(cfg.vit_dropout)
 
     def forward(self, x):
@@ -135,7 +135,7 @@ class ViT(nn.Module):
         self.patch_embedding = ViTPatchEmbeddings(cfg)
         self.cls_flag = cfg.vit_cls_flag
         self.dropout = nn.Dropout(cfg.vit_dropout)
-        self.blocks = nn.ModuleList([ViTBlock(cfg) for _ in range(cfg.vit_n_blocks)])
+        self.blocks = nn.ModuleList([ViTBlock(cfg) for _ in range(cfg.vit_n_blocks)]) # 12 blocks
         self.layer_norm = nn.LayerNorm(cfg.vit_hidden_dim, eps=cfg.vit_ln_eps)
 
         self.apply(self._init_weights)
@@ -174,7 +174,7 @@ class ViT(nn.Module):
         from huggingface_hub import hf_hub_download
         import safetensors
 
-        hf_config = SiglipVisionConfig.from_pretrained(cfg.vit_model_type)
+        hf_config = SiglipVisionConfig.from_pretrained(cfg.vit_model_type) # google/siglip-base-patch16-224
         cfg.vit_dropout=hf_config.attention_dropout
         cfg.vit_hidden_dim=hf_config.hidden_size
         cfg.vit_img_size=hf_config.image_size
@@ -249,3 +249,6 @@ class ViT(nn.Module):
         model.load_state_dict(sd)
         print(f"Successfully loaded {cfg.vit_model_type} weights from safetensors. Model has {sum(p.numel() for p in model.parameters()):,} parameters.")
         return model
+
+# if __name__ == "__main__":
+#     # test the model

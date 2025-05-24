@@ -7,10 +7,11 @@ import torch.nn.functional as F
 class RMSNorm(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(cfg.lm_hidden_dim))
+        self.weight = nn.Parameter(torch.ones(cfg.lm_hidden_dim))  # 756; gamma in RMSNorm
         self.eps = cfg.lm_rms_eps
 
     def forward(self, x):
+        # bs, seq_len, dim 
         irms = torch.rsqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps) # inverse of RMS
         x = x * irms * self.weight
 
@@ -23,19 +24,20 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         assert cfg.lm_hidden_dim % cfg.lm_n_heads == 0, "Hidden dimension must be divisible by number of heads"
         
-        self.dim = cfg.lm_hidden_dim // cfg.lm_n_heads # dim of each head
-        self.base = cfg.lm_re_base
-        self.max_seq_len = cfg.lm_max_position_embeddings
+        self.dim = cfg.lm_hidden_dim // cfg.lm_n_heads # dim of each head 576 // 9 = 64
+        self.base = cfg.lm_re_base # lm_re_base=100000
+        self.max_seq_len = cfg.lm_max_position_embeddings # 8192
         # Standard RoPE implementation - create frequencies for each dimension
         # freq_i = 1 / (base^(2i/dim)) where i is the dimension index
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq)
-        self.original_max_seq_len = cfg.lm_max_position_embeddings
-        self.attention_scaling = cfg.lm_attn_scaling
+        self.original_max_seq_len = cfg.lm_max_position_embeddings # 8192
+        self.attention_scaling = cfg.lm_attn_scaling # 1.0
 
     @torch.no_grad()
     def forward(self, position_ids):
         batch_size, seq_len = position_ids.shape
+        print(f"Batch size: {batch_size}, Sequence length: {seq_len}")
         # Dynamic scaling for longer sequences
         max_seq = position_ids.max() + 1
         if max_seq > self.original_max_seq_len:
@@ -43,19 +45,20 @@ class RotaryEmbedding(nn.Module):
             inv_freq = self.inv_freq / scale
         else:
             inv_freq = self.inv_freq
-            
+        # Got 10000 * (2i/dim)
         # Compute theta = position * frequency
         # Flatten position_ids for batch processing
-        flat_position_ids = position_ids.reshape(-1).float()
+        flat_position_ids = position_ids.reshape(-1).float() # [batch_size * seq_len]
         
         # Element-wise outer product: [seq_len] x [dim/2] => [seq_len, dim/2]
-        freqs = flat_position_ids.unsqueeze(-1) * inv_freq.unsqueeze(0)
+        freqs = flat_position_ids.unsqueeze(-1) * inv_freq.unsqueeze(0) # m * theta; same theta for two dimensions, flat_position_ids at the input is m: the position of the token in the sentence
         
         # Reshape to include batch dimension
         freqs = freqs.reshape(batch_size, seq_len, -1)
+        # bs, seq_len, dim//2 ex: 2, 10, 32
         
         # Now create interleaved pattern
-        emb = torch.cat([freqs, freqs], dim=-1)
+        emb = torch.cat([freqs, freqs], dim=-1) # bs, seq_len, dim
         
         # Compute cos and sin
         cos = torch.cos(emb) * self.attention_scaling
@@ -65,11 +68,22 @@ class RotaryEmbedding(nn.Module):
 
 # Rotates half the hidden dims of the input by swapping and negating dimensions.
 def rotate_half(x):
-    x1, x2 = x.chunk(2, dim=-1)
-    return torch.cat((-x2, x1), dim=-1)
+    # Given x = [x0, x1, x2, x3], this will return [-x1, x0, -x3, x2]
+    x1, x2 = x.chunk(2, dim=-1) # [bs, seq_len, dim//2], [bs, seq_len, dim//2]
+    return torch.cat((-x2, x1), dim=-1) # negate x2 and concatenate with x1
 
 # Apply rotary position embeddings to queries and keys.
 def apply_rotary_pos_embd(q, k, cos, sin, unsqueeze_dim=1):
+    """ given x = [a, b]
+    Rope(x) = 
+            |cos(theta) -sin(theta) |   |a|
+            |sin(theta)   cos(theta)| * |b|
+        =     |a| * cos(theta) - |b| * sin(theta)
+              |b|                |a|
+    where theta = position * frequency
+
+    that is why we got rotate half  
+    """
     # We need to make sure cos and sin can be properly broadcast
     # to the shape of q and k by adding the heads dimension
     cos = cos.unsqueeze(unsqueeze_dim)  # [batch_size, 1, seq_len, head_dim]
@@ -88,20 +102,23 @@ class LanguageModelGroupedQueryAttention(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        self.n_heads = cfg.lm_n_heads
-        self.n_kv_heads = cfg.lm_n_kv_heads
-        self.embd_dim = cfg.lm_hidden_dim
+        self.n_heads = cfg.lm_n_heads # 9
+        self.n_kv_heads = cfg.lm_n_kv_heads # 3
+        self.embd_dim = cfg.lm_hidden_dim # 576
         self.dropout = cfg.lm_dropout
 
         assert self.n_heads % self.n_kv_heads == 0, "n_heads must be divisible by n_kv_heads"
         assert self.embd_dim % self.n_heads == 0, "embd_dim must be divisible by num_heads"
+        # Number of queries = number of heads
+        # Number of kv = number of kv_groups
+        # In this case, we have 9 heads ( 9 queries), and 3 kv groups (3 keys and 3 values)
+        # Meaning that for each kv group, we will perform 3 queries on it
+        self.n_kv_groups = self.n_heads // self.n_kv_heads # 3
+        self.head_dim = self.embd_dim // self.n_heads # 576//9 = 64
 
-        self.n_kv_groups = self.n_heads // self.n_kv_heads
-        self.head_dim = self.embd_dim // self.n_heads
-
-        self.q_proj = nn.Linear(self.embd_dim, self.embd_dim, bias=False)
-        self.k_proj = nn.Linear(self.embd_dim, self.head_dim * self.n_kv_heads, bias=False)
-        self.v_proj = nn.Linear(self.embd_dim, self.head_dim * self.n_kv_heads, bias=False)
+        self.q_proj = nn.Linear(self.embd_dim, self.embd_dim, bias=False) # Linear from (embed_dim, to 9 heads * 64 head dim = embed_dim)
+        self.k_proj = nn.Linear(self.embd_dim, self.head_dim * self.n_kv_heads, bias=False) # Linear from embed_dim, to 3 kv heads * 64 dim = 192
+        self.v_proj = nn.Linear(self.embd_dim, self.head_dim * self.n_kv_heads, bias=False) # Linear from embed_dim, to 3 kv heads * 64 dim = 192
         self.out_proj = nn.Linear(self.embd_dim, self.embd_dim, bias=False)
 
         self.attn_dropout = nn.Dropout(self.dropout)
@@ -122,7 +139,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # Use precomputed positional embeddings
         q, k = apply_rotary_pos_embd(q, k, cos, sin)
 
-        k = k.repeat_interleave(self.n_kv_groups, dim=1)
+        k = k.repeat_interleave(self.n_kv_groups, dim=1) # repeat k for each kv group
         v = v.repeat_interleave(self.n_kv_groups, dim=1)
 
         # Process attention mask if provided
