@@ -60,58 +60,141 @@ class VisionLanguageModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
-        # Process image through vision encoder and projection
+    def generate(self, 
+                 input_ids, 
+                 image, 
+                 attention_mask=None, 
+                 max_new_tokens=5, 
+                 top_k=50, 
+                 top_p=0.9, 
+                 temperature=0.5, 
+                 greedy=False, 
+                 beam_size: int = 1,
+                 length_penalty: float = 1.0):
+        # process image through vision encoder and projection
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
         
-        # Embed initial tokens
+        #branch to top-k beam search if requested from generate.py
+        if beam_size > 1:
+            return self._beam_search(
+                input_ids,
+                image_embd,
+                attention_mask,
+                max_new_tokens,
+                beam_size,
+                length_penalty,
+                temperature
+            )
+
+        # embed the initial text tokens
         token_embd = self.decoder.token_embedding(input_ids)
-        
-        # Concatenate image embeddings with token embeddings
-        combined_embd = torch.cat((image_embd, token_embd), dim=1)
+        # concatenate image and token embeddings along sequence dimension
+        outputs = torch.cat((image_embd, token_embd), dim=1)
+
+        if attention_mask is not None:
+            batch_size, img_seq_len = image_embd.shape[:2]
+            image_mask = torch.ones(
+                (batch_size, img_seq_len),
+                device=attention_mask.device,
+                dtype=attention_mask.dtype
+            )
+            attention_mask = torch.cat((image_mask, attention_mask), dim=1)
 
         batch_size = image_embd.size(0)
-        img_seq_len = image_embd.size(1)
-        # Adjust attention mask to account for image tokens
-        if attention_mask is not None:
-            # Create mask of 1s for image tokens (all image tokens should be attended to)
-            image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
-            attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
-        
-        # Generate from combined embeddings using the decoder
-        # We need to use the decoder's forward function and not its generate method
-        # because we want to keep track of the image prefix
-        outputs = combined_embd
-        generated_tokens = torch.zeros((batch_size, max_new_tokens), device=input_ids.device, dtype=input_ids.dtype)
-        
-        #Note: Here you could implement improvements like e.g. KV caching
+        generated = torch.zeros(
+            (batch_size, max_new_tokens),
+            device=input_ids.device,
+            dtype=input_ids.dtype
+        )
+
         for i in range(max_new_tokens):
             model_out = self.decoder(outputs, attention_mask)
-            
-            # Get predictions for the last token only (normally this is the embedding, not the logits)
-            last_token_logits = model_out[:, -1, :]
-            
-            # Apply head to get logits (if model is in embedding mode)
+            # take logits for the last time step
+            last_logits = model_out[:, -1, :]
+            # if decoder returns embeddings instead of logits, apply the head
             if not self.decoder.lm_use_tokens:
-                last_token_logits = self.decoder.head(last_token_logits)
+                last_logits = self.decoder.head(last_logits)
+
             if greedy:
-                next_token = torch.argmax(last_token_logits, dim=-1, keepdim=True)
+                # greedy search just picks highest‐probability token...
+                next_tok = torch.argmax(last_logits, dim=-1, keepdim=True)
             else:
-                filtered_logits = top_k_top_p_filtering(last_token_logits, top_k=top_k, top_p=top_p)
-                probs = torch.softmax(filtered_logits/temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-            generated_tokens[:, i] = next_token.squeeze(-1)
-            
-            # Convert to embedding and append
-            next_embd = self.decoder.token_embedding(next_token)
+                # apply top-k/top-p filtering then sample
+                filt = top_k_top_p_filtering(last_logits, top_k=top_k, top_p=top_p)
+                probs = torch.softmax(filt / temperature, dim=-1)
+                next_tok = torch.multinomial(probs, num_samples=1)
+
+            #record the chosen token
+            generated[:, i] = next_tok.squeeze(-1)
+            next_embd = self.decoder.token_embedding(next_tok)
             outputs = torch.cat((outputs, next_embd), dim=1)
 
+            # extend attention mask for the new token if present
             if attention_mask is not None:
-                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device)), dim=1)
-        
-        return generated_tokens
+                pad = torch.ones((batch_size, 1), device=attention_mask.device)
+                attention_mask = torch.cat((attention_mask, pad), dim=1)
+
+        return generated
+    
+    def _beam_search(
+        self,
+        input_ids,
+        image_embd,
+        attention_mask,
+        max_new_tokens,
+        beam_size,
+        length_penalty,
+        temperature
+    ):
+        batch_size = image_embd.size(0)
+        #(sequence_ids, accumulated_score, attention_mask)
+        beams = [(input_ids, 0.0, attention_mask)]
+        completed = []
+
+        for _ in range(max_new_tokens):
+            candidates = []
+            for seq, score, mask in beams:
+                #single‐step forward
+                tok_emb = self.decoder.token_embedding(seq)
+                combined = torch.cat((image_embd, tok_emb), dim=1)
+                logits = self.decoder(combined, mask)[:, -1, :]
+                if not self.decoder.lm_use_tokens:
+                    logits = self.decoder.head(logits)
+                log_probs = F.log_softmax(logits / temperature, dim=-1)
+
+                # top‐k expansions from this beam
+                topk_lp, topk_ids = log_probs.topk(beam_size, dim=-1)
+                for lp, tid in zip(topk_lp[0], topk_ids[0]):
+                    # i had a shape issue here so I had to unsqueeze twice to solve it
+                    # unsqueeze twice so we get a (batch_size, 1) tensor
+                    new_tok = tid.unsqueeze(0).unsqueeze(-1)
+                    #seq (shape [batch, seq_len]) and new_tok ([batch,1]) are now 2-D
+                    new_seq = torch.cat([seq, new_tok], dim=1)
+                    if mask is not None:
+                        new_mask = torch.cat(
+                            [mask, torch.ones((batch_size, 1), device=mask.device)],
+                            dim=1
+                        )
+                    else:
+                        new_mask = None
+                    candidates.append((new_seq, score + lp.item(), new_mask))
+
+            # cut back to best `beam_size` (with length penalty)
+            beams = sorted(
+                candidates,
+                key=lambda x: x[1] / (x[0].size(1) ** length_penalty),
+                reverse=True
+            )[:beam_size]
+
+            if not beams:
+                break
+
+        # pick the best finished or ongoing beam
+        beam_seqs = [b[0][:, input_ids.size(1):] for b in beams]
+        # return ONLY the newly generated portion
+        return torch.stack(beam_seqs, dim=1)
+
 
     @classmethod
     def from_pretrained(

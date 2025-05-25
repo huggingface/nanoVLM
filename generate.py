@@ -29,6 +29,14 @@ def parse_args():
                         help="Num. of outputs to generate")
     parser.add_argument("--max_new_tokens", type=int, default=20,
                         help="Maximum number of tokens per output")
+    parser.add_argument( "--beam_search", action="store_true", #store_true creates a default value of False
+                        help="run beam-search decoding instead of greedy sampling")
+    parser.add_argument("--beam_size", type=int, default=5, 
+                        help="beam width (this is used if --beam_search is set)"
+                        )
+    parser.add_argument("--length_penalty", type=float, default=1.0,
+                        help="length penalty for beam search (only if --beam_search is set )"
+                        )
     return parser.parse_args()
 
 
@@ -59,10 +67,28 @@ def main():
     img_t = image_processor(img).unsqueeze(0).to(device)
 
     print("\nInput:\n ", args.prompt, "\n\nOutputs:")
+    if args.beam_search:
+        print("[Top-K beam_search]\n")
+        gen = model.generate(
+            tokens,
+            img_t,
+            max_new_tokens = args.max_new_tokens,
+            beam_size= args.beam_size,
+            length_penalty=args.length_penalty
+        )
+        for b in range(gen.size(1)):
+            out = tokenizer.decode(gen[0, b], skip_special_tokens=True)
+            print(f"  >> Beam {b+1}: {out}")
+        return
     for i in range(args.generations):
-        gen = model.generate(tokens, img_t, max_new_tokens=args.max_new_tokens)
-        out = tokenizer.batch_decode(gen, skip_special_tokens=True)[0]
-        print(f"  >> Generation {i+1}: {out}")
+       # sampling / greedy loop for non-beam [default]
+       gen = model.generate(
+           tokens,
+           img_t,
+           max_new_tokens=args.max_new_tokens
+       )
+       out = tokenizer.batch_decode(gen, skip_special_tokens=True)[0]
+       print(f"  >> Generation {i+1}: {out}")
 
 
 if __name__ == "__main__":
