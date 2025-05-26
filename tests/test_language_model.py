@@ -11,7 +11,7 @@ class TestLanguageModel(unittest.TestCase):
             lm_inter_dim=128,
             lm_rms_eps=1e-5,
             lm_re_base=10000.0,
-            lm_max_position_embeddings=512,
+            lm_max_position_embeddings=1024,
             lm_attn_scaling=1.0,
             lm_vocab_size=100, # Small vocab for testing
             lm_n_heads=4,
