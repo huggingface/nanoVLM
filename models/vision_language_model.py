@@ -60,7 +60,7 @@ class VisionLanguageModel(nn.Module):
         return logits, loss
 
     @torch.inference_mode()
-    def generate(self, input_ids, image, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
+    def generate(self, input_ids, image, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False, use_kv_cache: bool = True):
         # input_ids: [B, T_prompt_text]
         # image: [B, C, H, W]
         # max_new_tokens: int, maximum number of tokens to generate
@@ -118,8 +118,8 @@ class VisionLanguageModel(nn.Module):
             decode_step_output, kv_cache_list = self.decoder(
                 next_token_embed,
                 attention_mask=None, # Autoregressive, so no explicit mask beyond KV cache structure
-                kv_cache=kv_cache_list, # Pass the updated cache
-                start_pos=current_token_start_pos
+                kv_cache=kv_cache_list if use_kv_cache else None, # Pass the updated cache
+                start_pos=current_token_start_pos if use_kv_cache else 0 # Only use start_pos if using KV cache
             )
             
             last_token_output = decode_step_output[:, -1, :] 
