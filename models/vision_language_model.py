@@ -96,7 +96,7 @@ class VisionLanguageModel(nn.Module):
         # Store newly generated token IDs
         newly_generated_ids_list = []
 
-        # --- Decode Phase with Sampling tokens one by one ---
+        # --- Decode Phase by sampling tokens autoregressively using the kv-cache ---
         for _ in range(max_new_tokens):
             if greedy:
                 next_token_id = torch.argmax(current_logits, dim=-1, keepdim=True)
