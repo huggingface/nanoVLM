@@ -168,7 +168,7 @@ def test_mmstar(model, tokenizer, test_loader, device):
 
             correct_answer = tokenizer.batch_decode(labels, skip_special_tokens=True)
             
-            gen = model.generate(input_ids, image, attention_mask)
+            gen = model.generate(input_ids, image, attention_mask, greedy=True)
             model_output = tokenizer.batch_decode(gen, skip_special_tokens=True)
             
             is_correct = utils.check_multiple_choice_with_regex(model_output, correct_answer)
