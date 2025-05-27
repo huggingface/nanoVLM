@@ -60,12 +60,7 @@ class VisionLanguageModel(nn.Module):
         return logits, loss
 
     @torch.inference_mode()
-    def generate(self, input_ids, image, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False, use_kv_cache: bool = True):
-        # input_ids: [B, T_prompt_text]
-        # image: [B, C, H, W]
-        # max_new_tokens: int, maximum number of tokens to generate
-
-        B = image.size(0)
+    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False, use_kv_cache: bool = True):
 
         # 1. Process image
         image_embd = self.vision_encoder(image) # [B, T_img, D_model]
@@ -77,11 +72,20 @@ class VisionLanguageModel(nn.Module):
         # 3. Combine image and text prompt embeddings for prefill
         initial_combined_embeds = torch.cat((image_embd, prompt_token_embeds), dim=1) # [B, T_img + T_prompt_text, D_lm]
         current_total_seq_len = initial_combined_embeds.size(1)
+
+        batch_size = image_embd.size(0)
+        if attention_mask is not None:
+            # Create mask of 1s for image tokens (all image tokens should be attended to)
+            img_seq_len = image_embd.size(1)
+            image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
+            
+            # Combine image and token attention masks
+            attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
         
         # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder(
             initial_combined_embeds,
-            attention_mask=None,
+            attention_mask=attention_mask,
             kv_cache=None,
             start_pos=0
         )
@@ -127,10 +131,14 @@ class VisionLanguageModel(nn.Module):
                 # Reconstruct the full sequence: image + prompt + generated tokens so far
                 generated_token_embeds = torch.cat([self.decoder.token_embedding(tid) for tid in newly_generated_ids_list], dim=1)
                 full_sequence_embeds = torch.cat([initial_combined_embeds, generated_token_embeds], dim=1)
+                # update attention mask
+                if attention_mask is not None:
+                    attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
+
                 
                 decode_step_output, _ = self.decoder(
                     full_sequence_embeds,
-                    attention_mask=None,
+                    attention_mask=attention_mask,
                     kv_cache=None,
                     start_pos=0
                 )
