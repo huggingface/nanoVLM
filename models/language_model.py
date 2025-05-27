@@ -157,26 +157,19 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             # This additive_attn_mask shape is [B, 1, 1, T_kv]
 
         if self.sdpa and x.device.type != 'mps':
-            is_causal_sdpa = (is_prefill and T_curr > 1) # True only for prefill of a sequence
-                                                            # Not for single token decode, even if T_curr=1 then
-            
-            # When T_curr=1 (decode) and T_kv > 1, is_causal_sdpa is False.
-            # additive_attn_mask [B,1,1,T_kv] will mask out padded KV elements.
-            # Attention is for q (1 token) to all KVs. No further causal masking needed within this step by SDPA.
-
+            # During decode, no additional masking needed as [1, T_kv] is naturally causal
+            is_causal = (T_curr == T_kv and T_curr > 1)
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k_exp, v_exp,
                 attn_mask=additive_attn_mask, 
                 dropout_p=self.dropout if self.training else 0.0,
-                is_causal=is_causal_sdpa 
+                is_causal=is_causal
             )
         else:
             # Manual attention implementation
             attn = torch.matmul(q, k_exp.transpose(2, 3)) / math.sqrt(self.head_dim) # (B, n_heads, T_curr, T_kv)
-            
-            # Causal mask for prefill where T_curr == T_kv and T_curr > 1
-            if is_prefill and T_curr > 1 and T_curr == T_kv:
-                # This creates a lower triangular mask for square attention (prefill)
+            # During decode: no additional masking needed as [1, T_kv] is naturally causal
+            if T_curr == T_kv and T_curr > 1:
                 causal_mask_val = torch.tril(torch.ones(T_curr, T_curr, device=x.device, dtype=torch.bool)).view(1, 1, T_curr, T_curr)
                 attn = attn.masked_fill(~causal_mask_val, float('-inf'))
 
