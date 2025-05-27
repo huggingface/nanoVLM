@@ -48,7 +48,7 @@ class VisionLanguageModel(nn.Module):
             # Combine image and token attention masks
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
 
-        logits = self.decoder(combined_embd, attention_mask) # Not logits yet, but easier to return like this
+        logits, _ = self.decoder(combined_embd, attention_mask=attention_mask) # Not logits yet, but easier to return like this
 
         loss = None
         if targets is not None:
@@ -59,23 +59,44 @@ class VisionLanguageModel(nn.Module):
 
         return logits, loss
 
-    @torch.no_grad()
-    def generate(self, 
-                 input_ids, 
-                 image, 
-                 attention_mask=None, 
-                 max_new_tokens=5, 
-                 top_k=50, 
-                 top_p=0.9, 
-                 temperature=0.5, 
-                 greedy=False, 
-                 beam_size: int = 1,
-                 length_penalty: float = 1.0):
-        # process image through vision encoder and projection
-        image_embd = self.vision_encoder(image)
-        image_embd = self.MP(image_embd)
+    @torch.inference_mode()
+    def generate(
+        self,
+        input_ids,
+        image,
+        attention_mask=None,
+        max_new_tokens=5,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.5,
+        greedy=False,
+        beam_size: int = 1,
+        length_penalty: float = 1.0,
+        use_kv_cache: bool = True
+    ):
         
-        #branch to top-k beam search if requested from generate.py
+        image_embd = self.vision_encoder(image)  # [B, T_img, D_model]
+        image_embd = self.MP(image_embd)         # [B, T_img, D_lm]
+
+        # Embed initial text prompt tokens
+        prompt_token_embeds = self.decoder.token_embedding(input_ids)  # [B, T_prompt, D_lm]
+
+        # Combine image and text prompt embeddings for prefill
+        initial_combined_embeds = torch.cat((image_embd, prompt_token_embeds), dim=1)  # [B, T_img+T_prompt, D_lm]
+        current_total_seq_len = initial_combined_embeds.size(1)
+
+        # prepare attention mask
+        batch_size = image_embd.size(0)
+        if attention_mask is not None:
+            img_seq_len = image_embd.size(1)
+            image_attention_mask = torch.ones(
+                (batch_size, img_seq_len),
+                device=attention_mask.device,
+                dtype=attention_mask.dtype
+            )
+            attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
+
+        # Branch to beam search if requested
         if beam_size > 1:
             return self._beam_search(
                 input_ids,
@@ -87,66 +108,89 @@ class VisionLanguageModel(nn.Module):
                 temperature
             )
 
-        # embed the initial text tokens
-        token_embd = self.decoder.token_embedding(input_ids)
-        # concatenate image and token embeddings along sequence dimension
-        outputs = torch.cat((image_embd, token_embd), dim=1)
-
-        if attention_mask is not None:
-            batch_size, img_seq_len = image_embd.shape[:2]
-            image_mask = torch.ones(
-                (batch_size, img_seq_len),
-                device=attention_mask.device,
-                dtype=attention_mask.dtype
-            )
-            attention_mask = torch.cat((image_mask, attention_mask), dim=1)
-
-        batch_size = image_embd.size(0)
-        generated = torch.zeros(
-            (batch_size, max_new_tokens),
-            device=input_ids.device,
-            dtype=input_ids.dtype
+        # --- Multimodal Prefill Phase ---
+        prefill_output, kv_cache_list = self.decoder(
+            initial_combined_embeds,
+            attention_mask=attention_mask,
+            kv_cache=None,
+            start_pos=0
         )
+        last_token_output_from_prefill = prefill_output[:, -1, :]
 
-        for i in range(max_new_tokens):
-            model_out = self.decoder(outputs, attention_mask)
-            # take logits for the last time step
-            last_logits = model_out[:, -1, :]
-            # if decoder returns embeddings instead of logits, apply the head
-            if not self.decoder.lm_use_tokens:
-                last_logits = self.decoder.head(last_logits)
+        if not self.decoder.lm_use_tokens:
+            current_logits = self.decoder.head(last_token_output_from_prefill)
+        else:
+            current_logits = last_token_output_from_prefill
 
+        # Store newly generated token IDs
+        newly_generated_ids_list = []
+
+        # --- Decode Phase by sampling or greedy with optional KV-cache ---
+        for _ in range(max_new_tokens):
             if greedy:
-                # greedy search just picks highest‐probability token...
-                next_tok = torch.argmax(last_logits, dim=-1, keepdim=True)
+                next_token_id = torch.argmax(current_logits, dim=-1, keepdim=True)
             else:
-                # apply top-k/top-p filtering then sample
-                filt = top_k_top_p_filtering(last_logits, top_k=top_k, top_p=top_p)
-                probs = torch.softmax(filt / temperature, dim=-1)
-                next_tok = torch.multinomial(probs, num_samples=1)
+                filtered_logits = top_k_top_p_filtering(current_logits, top_k=top_k, top_p=top_p)
+                probs = torch.softmax(filtered_logits / temperature, dim=-1)
+                next_token_id = torch.multinomial(probs, num_samples=1)
 
-            #record the chosen token
-            generated[:, i] = next_tok.squeeze(-1)
-            next_embd = self.decoder.token_embedding(next_tok)
-            outputs = torch.cat((outputs, next_embd), dim=1)
+            newly_generated_ids_list.append(next_token_id)
 
-            # extend attention mask for the new token if present
+            # Embed the newly generated token
+            next_token_embed = self.decoder.token_embedding(next_token_id)  # [B, 1, D_lm]
+
+            # update sequence length for KV-cache start_pos
+            current_token_start_pos = current_total_seq_len
+            current_total_seq_len += 1
+
+            # update attention mask
             if attention_mask is not None:
-                pad = torch.ones((batch_size, 1), device=attention_mask.device)
-                attention_mask = torch.cat((attention_mask, pad), dim=1)
+                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
 
-        return generated
+            if use_kv_cache:
+                # With KV cache: only process the new token
+                decode_step_output, kv_cache_list = self.decoder(
+                    next_token_embed,
+                    attention_mask=attention_mask,
+                    kv_cache=kv_cache_list,
+                    start_pos=current_token_start_pos
+                )
+            else:
+                # Without KV cache: process the entire sequence from scratch
+                # Reconstruct the full sequence: image + prompt + generated tokens so far
+                generated_token_embeds = torch.cat([self.decoder.token_embedding(tid) for tid in newly_generated_ids_list], dim=1)
+                full_sequence_embeds = torch.cat([initial_combined_embeds, generated_token_embeds], dim=1)
+ 
+                decode_step_output, _ = self.decoder(
+                    full_sequence_embeds,
+                    attention_mask=attention_mask,
+                    kv_cache=None,
+                    start_pos=0
+                )
+                
+            last_token_output = decode_step_output[:, -1, :] 
+            
+            # Apply head to get logits (if model is in embedding mode)
+            if not self.decoder.lm_use_tokens:
+                current_logits = self.decoder.head(last_token_output)
+            else:
+                current_logits = last_token_output
+        
+        if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
+             return torch.empty((batch_size,0), dtype=torch.long, device=input_ids.device)
+
+        return torch.cat(newly_generated_ids_list, dim=1)
     
     def _beam_search(
-        self,
-        input_ids,
-        image_embd,
-        attention_mask,
-        max_new_tokens,
-        beam_size,
-        length_penalty,
-        temperature
-    ):
+            self,
+            input_ids,
+            image_embd,
+            attention_mask,
+            max_new_tokens,
+            beam_size,
+            length_penalty,
+            temperature
+        ):
         batch_size = image_embd.size(0)
         #(sequence_ids, accumulated_score, attention_mask)
         beams = [(input_ids, 0.0, attention_mask)]
@@ -158,7 +202,9 @@ class VisionLanguageModel(nn.Module):
                 #single‐step forward
                 tok_emb = self.decoder.token_embedding(seq)
                 combined = torch.cat((image_embd, tok_emb), dim=1)
-                logits = self.decoder(combined, mask)[:, -1, :]
+                #unpack the decoder output
+                model_out, _ = self.decoder(combined, mask)
+                logits = model_out[:, -1, :]
                 if not self.decoder.lm_use_tokens:
                     logits = self.decoder.head(logits)
                 log_probs = F.log_softmax(logits / temperature, dim=-1)
@@ -166,7 +212,6 @@ class VisionLanguageModel(nn.Module):
                 # top‐k expansions from this beam
                 topk_lp, topk_ids = log_probs.topk(beam_size, dim=-1)
                 for lp, tid in zip(topk_lp[0], topk_ids[0]):
-                    # i had a shape issue here so I had to unsqueeze twice to solve it
                     # unsqueeze twice so we get a (batch_size, 1) tensor
                     new_tok = tid.unsqueeze(0).unsqueeze(-1)
                     #seq (shape [batch, seq_len]) and new_tok ([batch,1]) are now 2-D
@@ -194,7 +239,6 @@ class VisionLanguageModel(nn.Module):
         beam_seqs = [b[0][:, input_ids.size(1):] for b in beams]
         # return ONLY the newly generated portion
         return torch.stack(beam_seqs, dim=1)
-
 
     @classmethod
     def from_pretrained(
