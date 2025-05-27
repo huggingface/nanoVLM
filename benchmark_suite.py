@@ -76,7 +76,7 @@ def benchmark_vlm(
             mask = torch.cat((torch.ones((1, img_len), device=device), attention_mask), dim=1)
         outputs = combined
         for _ in range(max_new_tokens):
-            out = model.decoder(outputs, mask)
+            out, _ = model.decoder(outputs, mask)
             logits = out[:, -1, :]
             if not model.decoder.lm_use_tokens:
                 logits = model.decoder.head(logits)
@@ -112,7 +112,7 @@ def benchmark_vlm(
             mask = torch.cat((torch.ones((1, img_emb.size(1)), device=device), attention_mask), dim=1)
         if device.type == 'cuda': torch.cuda.synchronize()
         t0 = time.perf_counter()
-        out = model.decoder(combined, mask)
+        out, _ = model.decoder(combined, mask)
         logits = out[:, -1, :]
         if not model.decoder.lm_use_tokens: logits = model.decoder.head(logits)
         probs = torch.softmax(logits, dim=-1)
@@ -129,7 +129,7 @@ def benchmark_vlm(
         m = mask
         if m is not None: m = torch.cat((m, torch.ones((1,1), device=device)), dim=1)
         for _ in range(1, max_new_tokens):
-            out = model.decoder(seq, m)
+            out, _ = model.decoder(seq, m)
             logits = out[:, -1, :]
             if not model.decoder.lm_use_tokens: logits = model.decoder.head(logits)
             p = torch.softmax(logits, dim=-1)
