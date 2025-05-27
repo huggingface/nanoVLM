@@ -118,11 +118,15 @@ class VisionLanguageModel(nn.Module):
             current_token_start_pos = current_total_seq_len
             current_total_seq_len += 1
 
+            # update attention mask
+            if attention_mask is not None:
+                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
+
             if use_kv_cache:
                 # With KV cache: only process the new token
                 decode_step_output, kv_cache_list = self.decoder(
                     next_token_embed,
-                    attention_mask=None,
+                    attention_mask=attention_mask,
                     kv_cache=kv_cache_list,
                     start_pos=current_token_start_pos
                 )
@@ -131,11 +135,7 @@ class VisionLanguageModel(nn.Module):
                 # Reconstruct the full sequence: image + prompt + generated tokens so far
                 generated_token_embeds = torch.cat([self.decoder.token_embedding(tid) for tid in newly_generated_ids_list], dim=1)
                 full_sequence_embeds = torch.cat([initial_combined_embeds, generated_token_embeds], dim=1)
-                # update attention mask
-                if attention_mask is not None:
-                    attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
-
-                
+ 
                 decode_step_output, _ = self.decoder(
                     full_sequence_embeds,
                     attention_mask=attention_mask,
