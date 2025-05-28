@@ -258,15 +258,13 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x, attention_mask=None, kv_cache=None, start_pos=0):
+    def forward(self, x, attention_mask=None, kv_cache=None, current_position_ids: torch.Tensor = None):
         if self.lm_use_tokens:
             x = self.token_embedding(x)
 
         # T_curr is the length of the current input sequence
-        B, T_curr, _ = x.size()
-        
         # Create position_ids for the current sequence based on start_pos
-        current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
+
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
         # Initialize new KV cache if none provided
@@ -279,8 +277,8 @@ class LanguageModel(nn.Module):
         x = self.norm(x)
 
         # Compute logits if we are using tokens, otherwise stay in the embedding space
-        if self.lm_use_tokens: 
-            x = self.head(x) 
+        if self.lm_use_tokens:
+            x = self.head(x)
 
         return x, kv_cache
 
