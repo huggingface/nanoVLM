@@ -1,5 +1,5 @@
 import math
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -152,12 +152,12 @@ class LanguageModelGroupedQueryAttention(nn.Module):
 
         if self.sdpa and x.device.type != 'mps':
             # During decode, no additional masking needed as [1, T_kv] is naturally causal
-            is_causal = (T_curr == T_kv and T_curr > 1)
+            # Fix: torch._dynamo.exc.Unsupported: TypeError <built-in function scaled_dot_product_attention>: scaled_dot_product_attention(): argument 'is_causal' must be bool, not SymBool
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k_exp, v_exp,
                 attn_mask=additive_attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
-                is_causal=is_causal
+                is_causal=False
             )
         else:
             # Manual attention implementation
