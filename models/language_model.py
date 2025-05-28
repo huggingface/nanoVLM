@@ -1,7 +1,10 @@
 import math
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from models.kvcache import KVCache
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L69
 class RMSNorm(nn.Module):
@@ -37,16 +40,20 @@ class RotaryEmbedding(nn.Module):
     def forward(self, position_ids):
         batch_size, seq_len = position_ids.shape
         # Dynamic scaling for longer sequences
+        
+        # (tsdocode, 28 May 2025) 
+        # if else cause: Dynamic control flow is not supported at the moment.
+        # Refactor using torch.clamp
         max_seq = position_ids.max() + 1
-        if max_seq > self.original_max_seq_len:
-            scale = max_seq / self.original_max_seq_len
-            inv_freq = self.inv_freq / scale
-        else:
-            inv_freq = self.inv_freq
+        
+        scale = torch.clamp(max_seq / self.original_max_seq_len, min=1.0)
+        inv_freq = self.inv_freq / scale
             
         # Compute theta = position * frequency
         # Flatten position_ids for batch processing
-        flat_position_ids = position_ids.reshape(-1).float()
+        # (tsdocode, 28 May 2025) 
+        # Fix dtype error on bfloat16/float16 inference
+        flat_position_ids = position_ids.reshape(-1).to(self.inv_freq.dtype)
         
         # Element-wise outer product: [seq_len] x [dim/2] => [seq_len, dim/2]
         freqs = flat_position_ids.unsqueeze(-1) * inv_freq.unsqueeze(0)
@@ -112,10 +119,8 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         if not self.sdpa:
             print("Warning: scaled dot product attention not available, using standard attention in LM.")
 
-    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
-        is_prefill = block_kv_cache is None
-
-        B, T_curr, C = x.size() # T_curr is the sequence length of the current input x
+    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None, current_position_ids=None):
+        B, T_curr, C = x.size()  # T_curr is the sequence length of the current input x
 
         q_curr = self.q_proj(x).view(B, T_curr, self.n_heads, self.head_dim).transpose(1, 2)  # (B, n_heads, T_curr, head_dim)
         k_curr = self.k_proj(x).view(B, T_curr, self.n_kv_heads, self.head_dim).transpose(1, 2) # (B, n_kv_heads, T_curr, head_dim)
@@ -124,21 +129,9 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # Apply rotary embeddings to the current q and k
         q, k_rotated = apply_rotary_pos_embd(q_curr, k_curr, cos, sin)
 
-        # Check if we can use cached keys and values
-        if not is_prefill and block_kv_cache['key'] is not None:
-            # Concatenate with cached K, V
-            # k_rotated and v_curr are for the new token(s)
-            k = block_kv_cache['key']
-            v = block_kv_cache['value']
-            k = torch.cat([k, k_rotated], dim=2)
-            v = torch.cat([v, v_curr], dim=2)
-            block_kv_cache['key'] = k
-            block_kv_cache['value'] = v
-        else:
-            # No cache, this is the first pass (prefill)
-            k = k_rotated
-            v = v_curr
-            block_kv_cache = {'key': k, 'value': v}
+        # (tsdocode, 28 May 2025)
+        # Simplify kv cache update KV cache
+        k, v = block_kv_cache.update(current_position_ids[0], k_rotated, v_curr)
 
         # Repeat K, V for Grouped Query Attention
         k_exp = k.repeat_interleave(self.n_kv_groups, dim=1) # (B, n_heads, T_kv, head_dim)
@@ -153,7 +146,8 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             # The current `attention_mask` parameter is assumed to be `[B, total_sequence_length_kv]`
             # Let's make it `[B, 1, 1, T_kv]` for SDPA.
             mask_for_keys = attention_mask[:, :T_kv] # Ensure mask matches key length [B, T_kv]
-            additive_attn_mask = (1.0 - mask_for_keys.unsqueeze(1).unsqueeze(2).float()) * torch.finfo(q.dtype).min
+            # attention mask is already in [B, 1, 1, T_kv]
+            additive_attn_mask = (1.0 - mask_for_keys.to(k.dtype)) * torch.finfo(q.dtype).min
             # This additive_attn_mask shape is [B, 1, 1, T_kv]
 
         if self.sdpa and x.device.type != 'mps':
@@ -161,7 +155,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             is_causal = (T_curr == T_kv and T_curr > 1)
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k_exp, v_exp,
-                attn_mask=additive_attn_mask, 
+                attn_mask=additive_attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=is_causal
             )
@@ -185,7 +179,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         y = self.out_proj(y)
         y = self.resid_dropout(y)
 
-        return y, block_kv_cache
+        return y
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L160
 class LanguageModelMLP(nn.Module):
@@ -206,6 +200,7 @@ class LanguageModelMLP(nn.Module):
 
         return x
 
+
 # https://github.com/meta-llama/llama3/blob/main/llama/model.py#L222
 class LanguageModelBlock(nn.Module):
     def __init__(self, cfg):
@@ -215,10 +210,10 @@ class LanguageModelBlock(nn.Module):
         self.norm1 = RMSNorm(cfg) # Input Norm
         self.norm2 = RMSNorm(cfg) # Post Attention Norm
     
-    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
+    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None, current_position_ids=None):
         res = x
         x = self.norm1(x)
-        x, block_kv_cache = self.attn(x, cos, sin, attention_mask, block_kv_cache)
+        x = self.attn(x, cos, sin, attention_mask, block_kv_cache, current_position_ids)
         x = res + x
 
         res = x
@@ -226,7 +221,8 @@ class LanguageModelBlock(nn.Module):
         x = self.mlp(x)
         x = res + x
 
-        return x, block_kv_cache
+        return x
+
 
 # https://github.com/meta-llama/llama3/blob/main/llama/model.py#L251
 class LanguageModel(nn.Module):
@@ -258,7 +254,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x, attention_mask=None, kv_cache=None, current_position_ids: torch.Tensor = None):
+    def forward(self, x, attention_mask=None, kv_cache: Optional[List[KVCache]] = None, current_position_ids: torch.Tensor = None):
         if self.lm_use_tokens:
             x = self.token_embedding(x)
 
@@ -267,12 +263,20 @@ class LanguageModel(nn.Module):
 
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
-        # Initialize new KV cache if none provided
+        # # Initialize new KV cache if none provided
         if kv_cache is None:
-            kv_cache = [None] * len(self.blocks)
+            kv_cache = [
+                KVCache.new(
+                    max_batch_size=x.shape[0],
+                    max_seq_length=self.cfg.lm_max_position_embeddings,
+                    n_heads=self.cfg.lm_n_heads,
+                    head_dim=self.cfg.lm_hidden_dim // self.cfg.lm_n_heads,
+                    dtype=x.dtype
+                )
+            ] * len(self.blocks)
 
         for i, block in enumerate(self.blocks):
-            x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i])
+            x = block(x, cos, sin, attention_mask, kv_cache[i], current_position_ids)
 
         x = self.norm(x)
 
