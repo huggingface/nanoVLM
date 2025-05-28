@@ -81,17 +81,17 @@ class VisionLanguageModel(nn.Module):
             
             # Combine image and token attention masks
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
-        
+        current_position_ids = torch.arange(current_total_seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
         # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder(
             initial_combined_embeds,
             attention_mask=attention_mask,
             kv_cache=None,
-            start_pos=0
+            current_position_ids=current_position_ids
         )
-        
+
         last_token_output_from_prefill = prefill_output[:, -1, :] 
-        
+
         if not self.decoder.lm_use_tokens:
             current_logits = self.decoder.head(last_token_output_from_prefill) 
         else:
@@ -99,6 +99,7 @@ class VisionLanguageModel(nn.Module):
 
         # Store newly generated token IDs
         newly_generated_ids_list = []
+        current_token_start_pos = torch.tensor([current_total_seq_len + 1], device=input_ids.device).expand(batch_size, -1)
 
         # --- Decode Phase by sampling tokens autoregressively using the kv-cache ---
         for _ in range(max_new_tokens):
@@ -108,14 +109,13 @@ class VisionLanguageModel(nn.Module):
                 filtered_logits = top_k_top_p_filtering(current_logits, top_k=top_k, top_p=top_p)
                 probs = torch.softmax(filtered_logits / temperature, dim=-1)
                 next_token_id = torch.multinomial(probs, num_samples=1)
-            
+
             newly_generated_ids_list.append(next_token_id)
             
             # Embed the newly generated token
             next_token_embed = self.decoder.token_embedding(next_token_id) # [B, 1, D_lm]
             
             # The start_pos for the new token is the current total sequence length *before* adding this new token
-            current_token_start_pos = current_total_seq_len
             current_total_seq_len += 1
 
             # update attention mask
@@ -127,17 +127,19 @@ class VisionLanguageModel(nn.Module):
                 next_token_embed,
                 attention_mask=attention_mask,
                 kv_cache=kv_cache_list,
-                start_pos=current_token_start_pos
+                current_position_ids=current_token_start_pos
             )
-      
+
+            current_token_start_pos += 1
+
             last_token_output = decode_step_output[:, -1, :] 
-            
+
             # Apply head to get logits (if model is in embedding mode)
             if not self.decoder.lm_use_tokens:
                 current_logits = self.decoder.head(last_token_output)
             else:
                 current_logits = last_token_output
-        
+
         if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
             return torch.empty((batch_size,0), dtype=torch.long, device=input_ids.device)
 
