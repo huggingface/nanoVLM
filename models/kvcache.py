@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 
+# Copy from https://github.com/pytorch-labs/gpt-fast/blob/7dd5661e2adf2edd6a1042a2732dcd3a94064ad8/mixtral-moe/model.py#L58
 class KVCache(nn.Module):
     def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16):
         super().__init__()
