@@ -179,7 +179,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         y = self.out_proj(y)
         y = self.resid_dropout(y)
 
-        return y
+        return y, block_kv_cache
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L160
 class LanguageModelMLP(nn.Module):
@@ -221,7 +221,7 @@ class LanguageModelBlock(nn.Module):
         x = self.mlp(x)
         x = res + x
 
-        return x
+        return x, block_kv_cache
 
 
 # https://github.com/meta-llama/llama3/blob/main/llama/model.py#L251

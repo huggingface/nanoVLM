@@ -162,7 +162,7 @@ class VisionLanguageModel(nn.Module):
                 current_logits = self.decoder.head(last_token_output)
             else:
                 current_logits = last_token_output
-
+        
         if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
             return torch.empty((batch_size,0), dtype=torch.long, device=input_ids.device)
 
