@@ -72,7 +72,6 @@ class VisionLanguageModel(nn.Module):
         greedy=False,
         beam_size: int = 1,
         length_penalty: float = 1.0,
-        use_kv_cache: bool = True
     ):
         
         image_embd = self.vision_encoder(image)  # [B, T_img, D_model]
@@ -147,27 +146,14 @@ class VisionLanguageModel(nn.Module):
             if attention_mask is not None:
                 attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
 
-            if use_kv_cache:
-                # With KV cache: only process the new token
-                decode_step_output, kv_cache_list = self.decoder(
-                    next_token_embed,
-                    attention_mask=attention_mask,
-                    kv_cache=kv_cache_list,
-                    start_pos=current_token_start_pos
-                )
-            else:
-                # Without KV cache: process the entire sequence from scratch
-                # Reconstruct the full sequence: image + prompt + generated tokens so far
-                generated_token_embeds = torch.cat([self.decoder.token_embedding(tid) for tid in newly_generated_ids_list], dim=1)
-                full_sequence_embeds = torch.cat([initial_combined_embeds, generated_token_embeds], dim=1)
- 
-                decode_step_output, _ = self.decoder(
-                    full_sequence_embeds,
-                    attention_mask=attention_mask,
-                    kv_cache=None,
-                    start_pos=0
-                )
-                
+            # With KV cache: only process the new token
+            decode_step_output, kv_cache_list = self.decoder(
+                next_token_embed,
+                attention_mask=attention_mask,
+                kv_cache=kv_cache_list,
+                start_pos=current_token_start_pos
+            )
+      
             last_token_output = decode_step_output[:, -1, :] 
             
             # Apply head to get logits (if model is in embedding mode)
@@ -177,7 +163,7 @@ class VisionLanguageModel(nn.Module):
                 current_logits = last_token_output
         
         if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
-             return torch.empty((batch_size,0), dtype=torch.long, device=input_ids.device)
+            return torch.empty((batch_size,0), dtype=torch.long, device=input_ids.device)
 
         return torch.cat(newly_generated_ids_list, dim=1)
     
