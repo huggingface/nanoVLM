@@ -61,15 +61,18 @@ def dist_gather(o):
 def wrap_model(model):
     return DistributedDataParallel(model, device_ids=[dist.get_rank()])
 
-def get_run_name(train_cfg):
+def get_run_name(train_cfg, vlm_cfg):
     dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
     batch_size = f"bs{int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}"
     epochs = f"ep{train_cfg.epochs}"
     learning_rate = f"lr{train_cfg.lr_backbones}-{train_cfg.lr_mp}"
     num_gpus = f"{get_world_size()}xGPU"
     date = time.strftime("%m%d")
+    vit = f"{vlm_cfg.vit_model_type.split('/')[-1]}"
+    mp = f"mp{vlm_cfg.mp_pixel_shuffle_factor}"
+    llm = f"{vlm_cfg.lm_model_type.split('/')[-1]}"
 
-    return f"nanoVLM_{num_gpus}_{dataset_size}_{batch_size}_{epochs}_{learning_rate}_{date}"
+    return f"nanoVLM_{vit}_{mp}_{llm}_{num_gpus}_{dataset_size}_{batch_size}_{epochs}_{learning_rate}_{date}"
 
 def get_dataloaders(train_cfg, vlm_cfg):
     # Create datasets
@@ -202,7 +205,7 @@ def train(train_cfg, vlm_cfg):
 
     total_dataset_size = len(train_loader.dataset)
     if train_cfg.log_wandb and is_master():
-        run_name = get_run_name(train_cfg)
+        run_name = get_run_name(train_cfg, vlm_cfg)
         if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
         run = wandb.init(
@@ -353,7 +356,7 @@ def train(train_cfg, vlm_cfg):
                         epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
                         if epoch_accuracy > best_accuracy:
                             best_accuracy = epoch_accuracy
-                            eval_model.save_pretrained(save_directory=vlm_cfg.vlm_checkpoint_path)
+                            eval_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
                         if train_cfg.log_wandb and is_master():    
                             run.log({"accuracy": epoch_accuracy}, step=global_step)
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
@@ -404,7 +407,7 @@ def train(train_cfg, vlm_cfg):
         # Push the best model to the hub (Please set your user name in the config!)
         if vlm_cfg.hf_repo_name is not None:
             print("Training complete. Pushing model to Hugging Face Hub...")
-            hf_model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
+            hf_model = VisionLanguageModel.from_pretrained(os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
             hf_model.push_to_hub(vlm_cfg.hf_repo_name)
 
         if train_cfg.log_wandb:

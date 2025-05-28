@@ -37,7 +37,7 @@ class VLMConfig:
     mp_pixel_shuffle_factor: int = 2
 
     vlm_load_backbone_weights: bool = True
-    vlm_checkpoint_path: str = 'checkpoints/nanoVLM-222M'
+    vlm_checkpoint_path: str = 'checkpoints'
     hf_repo_name: str = 'nanoVLM'
 
 
