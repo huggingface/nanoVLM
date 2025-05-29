@@ -2,10 +2,10 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, Literal
 
 
-from models.kvcache import KVCache
+from models.kvcache import KVCacheFactory
 from models.utils import top_k_top_p_filtering
 from models.vision_transformer import ViT
 from models.language_model import LanguageModel
@@ -60,7 +60,7 @@ class VisionLanguageModel(nn.Module):
 
         return logits, loss
 
-    def setup_kv_cache(self, batch_size, max_seq_length):
+    def setup_kv_cache(self, batch_size, max_seq_length, kv_cache_implementation: Literal["static", "dynamic"] = "static"):
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
 
@@ -70,14 +70,33 @@ class VisionLanguageModel(nn.Module):
         head_dim = embd_dim // n_heads
 
         kv_caches = [
-            KVCache(batch_size, max_seq_length, self.cfg.lm_n_kv_heads, head_dim, dtype=dtype).to(device) for _ in range(self.cfg.lm_n_blocks)
+            KVCacheFactory.create_kv_cache(
+                kv_cache_implementation,
+                batch_size,
+                max_seq_length,
+                self.cfg.lm_n_kv_heads,
+                head_dim,
+                dtype=dtype,
+            ).to(device) for _ in range(self.cfg.lm_n_blocks)
         ]
         causal_mask = torch.tril(torch.ones(max_seq_length, max_seq_length, dtype=torch.bool, device=device))
 
         return kv_caches, causal_mask
 
     @torch.inference_mode()
-    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
+    def generate(
+        self,
+        input_ids,
+        image,
+        attention_mask=None,
+        max_new_tokens=5,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.5,
+        greedy=False,
+        use_kv_cache=False,
+        kv_cache_implementation: Optional[Literal["static", "dynamic"]] = "static",
+    ):
 
         # 1. Process image
         image_embd = self.vision_encoder(image) # [B, T_img, D_model]
@@ -102,12 +121,22 @@ class VisionLanguageModel(nn.Module):
         # print(f"attention_mask: {attention_mask}")
         current_position_ids = torch.arange(current_total_seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
 
-        kv_caches, casual_mask = self.setup_kv_cache(batch_size, initial_combined_embeds.size(-1) + max_new_tokens)
+        kv_caches, casual_mask = self.setup_kv_cache(
+            batch_size,
+            initial_combined_embeds.size(-1) + max_new_tokens,
+            kv_cache_implementation=kv_cache_implementation,
+        )
 
-        attention_mask = casual_mask[None, None, current_position_ids[0]]
+        if use_kv_cache:
+            if kv_cache_implementation == "static":
+                attention_mask = casual_mask[None, None, current_position_ids[0]]
+            elif kv_cache_implementation == "dynamic":
+                attention_mask = casual_mask[None, None, current_position_ids[0]][..., :current_total_seq_len]
+            else:
+                attention_mask = attention_mask
 
         # --- Multimodal Prefill Phase ---
-        prefill_output, kv_cache_list = self.decoder(
+        prefill_output = self.decoder(
             initial_combined_embeds,
             attention_mask=attention_mask,
             kv_cache=kv_caches,
@@ -143,13 +172,19 @@ class VisionLanguageModel(nn.Module):
             current_total_seq_len += 1
 
             # update attention mask
-            attention_mask = casual_mask[None, None, current_token_start_pos[0]]
+            if use_kv_cache:
+                if kv_cache_implementation == "static":
+                    attention_mask = casual_mask[None, None, current_token_start_pos[0]]
+                elif kv_cache_implementation == "dynamic":
+                    attention_mask = casual_mask[None, None, current_token_start_pos[0]][..., :current_total_seq_len]
+                else:
+                    attention_mask = None
 
             # With KV cache: only process the new token
-            decode_step_output, kv_cache_list = self.decoder(
+            decode_step_output = self.decoder(
                 next_token_embed,
                 attention_mask=attention_mask,
-                kv_cache=kv_cache_list,
+                kv_cache=kv_caches,
                 current_position_ids=current_token_start_pos
             )
 

@@ -1,10 +1,11 @@
 import math
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.kvcache import KVCache
+
+from models.kvcache import StaticKVCache, DynamicKVCache
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L69
 class RMSNorm(nn.Module):
@@ -254,7 +255,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x, attention_mask=None, kv_cache: Optional[List[KVCache]] = None, current_position_ids: torch.Tensor = None):
+    def forward(self, x, attention_mask=None, kv_cache: Optional[List[Union[StaticKVCache, DynamicKVCache]]] = None, current_position_ids: torch.Tensor = None):
         if self.lm_use_tokens:
             x = self.token_embedding(x)
 
@@ -262,18 +263,6 @@ class LanguageModel(nn.Module):
         # Create position_ids for the current sequence based on start_pos
 
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
-
-        # # Initialize new KV cache if none provided
-        if kv_cache is None:
-            kv_cache = [
-                KVCache.new(
-                    max_batch_size=x.shape[0],
-                    max_seq_length=self.cfg.lm_max_position_embeddings,
-                    n_heads=self.cfg.lm_n_heads,
-                    head_dim=self.cfg.lm_hidden_dim // self.cfg.lm_n_heads,
-                    dtype=x.dtype
-                )
-            ] * len(self.blocks)
 
         for i, block in enumerate(self.blocks):
             x = block(x, cos, sin, attention_mask, kv_cache[i], current_position_ids)
@@ -284,7 +273,7 @@ class LanguageModel(nn.Module):
         if self.lm_use_tokens:
             x = self.head(x)
 
-        return x, kv_cache
+        return x
 
 
     @torch.inference_mode()
