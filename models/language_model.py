@@ -132,12 +132,15 @@ class LanguageModelGroupedQueryAttention(nn.Module):
 
         # (tsdocode, 28 May 2025)
         # Simplify kv cache update KV cache
-        k, v = block_kv_cache.update(current_position_ids[0], k_rotated, v_curr)
+        if block_kv_cache is not None:
+            k, v = block_kv_cache.update(current_position_ids[0], k_rotated, v_curr)
+        else:
+            k, v = k_rotated, v_curr
 
         # Repeat K, V for Grouped Query Attention
         k_exp = k.repeat_interleave(self.n_kv_groups, dim=1) # (B, n_heads, T_kv, head_dim)
         v_exp = v.repeat_interleave(self.n_kv_groups, dim=1) # (B, n_heads, T_kv, head_dim)
-        
+
         T_kv = k_exp.size(2) # Total sequence length of keys/values
 
         # Prepare attention mask for SDPA or manual path

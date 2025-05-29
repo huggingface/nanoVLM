@@ -127,13 +127,18 @@ class VisionLanguageModel(nn.Module):
             kv_cache_implementation=kv_cache_implementation,
         )
 
+        if not use_kv_cache:
+            kv_caches = [None] * self.cfg.lm_n_blocks
+
         if use_kv_cache:
             if kv_cache_implementation == "static":
                 attention_mask = casual_mask[None, None, current_position_ids[0]]
             elif kv_cache_implementation == "dynamic":
                 attention_mask = casual_mask[None, None, current_position_ids[0]][..., :current_total_seq_len]
             else:
-                attention_mask = attention_mask
+                attention_mask = None
+        else:
+            attention_mask = casual_mask[None, None, current_position_ids[0]][..., :current_total_seq_len]
 
         # --- Multimodal Prefill Phase ---
         prefill_output = self.decoder(
@@ -179,14 +184,29 @@ class VisionLanguageModel(nn.Module):
                     attention_mask = casual_mask[None, None, current_token_start_pos[0]][..., :current_total_seq_len]
                 else:
                     attention_mask = None
+            else:
+                attention_mask = casual_mask[None, None, current_token_start_pos[0]][..., :current_total_seq_len]
 
-            # With KV cache: only process the new token
-            decode_step_output = self.decoder(
-                next_token_embed,
-                attention_mask=attention_mask,
-                kv_cache=kv_caches,
-                current_position_ids=current_token_start_pos
-            )
+            if use_kv_cache:
+                # With KV cache: only process the new token
+                decode_step_output = self.decoder(
+                    next_token_embed,
+                    attention_mask=attention_mask,
+                    kv_cache=kv_caches,
+                    current_position_ids=current_token_start_pos
+                )
+            else:
+                # Without KV cache: process the entire sequence from scratch
+                # Reconstruct the full sequence: image + prompt + generated tokens so far
+                generated_token_embeds = torch.cat([self.decoder.token_embedding(tid) for tid in newly_generated_ids_list], dim=1)
+                full_sequence_embeds = torch.cat([initial_combined_embeds, generated_token_embeds], dim=1)
+
+                decode_step_output = self.decoder(
+                    full_sequence_embeds,
+                    attention_mask=attention_mask,
+                    kv_cache=kv_caches,
+                    current_position_ids=current_token_start_pos
+                )
 
             current_token_start_pos += 1
 
