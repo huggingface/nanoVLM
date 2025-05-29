@@ -2,9 +2,10 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, Literal
 
 
+from models.kvcache import KVCacheFactory
 from models.utils import top_k_top_p_filtering
 from models.vision_transformer import ViT
 from models.language_model import LanguageModel
@@ -37,14 +38,14 @@ class VisionLanguageModel(nn.Module):
         token_embd = self.decoder.token_embedding(input_ids)
 
         combined_embd = torch.cat((image_embd, token_embd), dim=1) # Concatenate image embeddings to token embeddings
-        
+
         # Adjust attention mask to account for image tokens
         if attention_mask is not None:
             # Create mask of 1s for image tokens (all image tokens should be attended to)
             batch_size = image_embd.size(0)
             img_seq_len = image_embd.size(1)
             image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
-            
+   
             # Combine image and token attention masks
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
 
@@ -59,8 +60,43 @@ class VisionLanguageModel(nn.Module):
 
         return logits, loss
 
+    def setup_kv_cache(self, batch_size, max_seq_length, kv_cache_implementation: Literal["static", "dynamic"] = "static"):
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+
+        embd_dim = self.cfg.lm_hidden_dim
+        n_heads = self.cfg.lm_n_heads
+
+        head_dim = embd_dim // n_heads
+
+        kv_caches = [
+            KVCacheFactory.create_kv_cache(
+                kv_cache_implementation,
+                batch_size,
+                max_seq_length,
+                self.cfg.lm_n_kv_heads,
+                head_dim,
+                dtype=dtype,
+            ).to(device) for _ in range(self.cfg.lm_n_blocks)
+        ]
+        causal_mask = torch.tril(torch.ones(max_seq_length, max_seq_length, dtype=torch.bool, device=device))
+
+        return kv_caches, causal_mask
+
     @torch.inference_mode()
-    def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
+    def generate(
+        self,
+        input_ids,
+        image,
+        attention_mask=None,
+        max_new_tokens=5,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.5,
+        greedy=False,
+        use_kv_cache=False,
+        kv_cache_implementation: Optional[Literal["static", "dynamic"]] = "static",
+    ):
 
         # 1. Process image
         image_embd = self.vision_encoder(image) # [B, T_img, D_model]
@@ -78,20 +114,42 @@ class VisionLanguageModel(nn.Module):
             # Create mask of 1s for image tokens (all image tokens should be attended to)
             img_seq_len = image_embd.size(1)
             image_attention_mask = torch.ones((batch_size, img_seq_len), device=attention_mask.device, dtype=attention_mask.dtype)
-            
+
             # Combine image and token attention masks
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
-        
+
+        # print(f"attention_mask: {attention_mask}")
+        current_position_ids = torch.arange(current_total_seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
+
+        kv_caches, casual_mask = self.setup_kv_cache(
+            batch_size,
+            initial_combined_embeds.size(-1) + max_new_tokens,
+            kv_cache_implementation=kv_cache_implementation,
+        )
+
+        if not use_kv_cache:
+            kv_caches = [None] * self.cfg.lm_n_blocks
+
+        if use_kv_cache:
+            if kv_cache_implementation == "static":
+                attention_mask = casual_mask[None, None, current_position_ids[0]]
+            elif kv_cache_implementation == "dynamic":
+                attention_mask = casual_mask[None, None, current_position_ids[0]][..., :current_total_seq_len]
+            else:
+                attention_mask = None
+        else:
+            attention_mask = casual_mask[None, None, current_position_ids[0]][..., :current_total_seq_len]
+
         # --- Multimodal Prefill Phase ---
-        prefill_output, kv_cache_list = self.decoder(
+        prefill_output = self.decoder(
             initial_combined_embeds,
             attention_mask=attention_mask,
-            kv_cache=None,
-            start_pos=0
+            kv_cache=kv_caches,
+            current_position_ids=current_position_ids
         )
-        
+
         last_token_output_from_prefill = prefill_output[:, -1, :] 
-        
+
         if not self.decoder.lm_use_tokens:
             current_logits = self.decoder.head(last_token_output_from_prefill) 
         else:
@@ -99,6 +157,7 @@ class VisionLanguageModel(nn.Module):
 
         # Store newly generated token IDs
         newly_generated_ids_list = []
+        current_token_start_pos = torch.tensor([current_total_seq_len + 1], device=input_ids.device).expand(batch_size, -1) - 1
 
         # --- Decode Phase by sampling tokens autoregressively using the kv-cache ---
         for _ in range(max_new_tokens):
@@ -108,36 +167,57 @@ class VisionLanguageModel(nn.Module):
                 filtered_logits = top_k_top_p_filtering(current_logits, top_k=top_k, top_p=top_p)
                 probs = torch.softmax(filtered_logits / temperature, dim=-1)
                 next_token_id = torch.multinomial(probs, num_samples=1)
-            
+
             newly_generated_ids_list.append(next_token_id)
             
             # Embed the newly generated token
             next_token_embed = self.decoder.token_embedding(next_token_id) # [B, 1, D_lm]
             
             # The start_pos for the new token is the current total sequence length *before* adding this new token
-            current_token_start_pos = current_total_seq_len
             current_total_seq_len += 1
 
             # update attention mask
-            if attention_mask is not None:
-                attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
+            if use_kv_cache:
+                if kv_cache_implementation == "static":
+                    attention_mask = casual_mask[None, None, current_token_start_pos[0]]
+                elif kv_cache_implementation == "dynamic":
+                    attention_mask = casual_mask[None, None, current_token_start_pos[0]][..., :current_total_seq_len]
+                else:
+                    attention_mask = None
+            else:
+                attention_mask = casual_mask[None, None, current_token_start_pos[0]][..., :current_total_seq_len]
 
-            # With KV cache: only process the new token
-            decode_step_output, kv_cache_list = self.decoder(
-                next_token_embed,
-                attention_mask=attention_mask,
-                kv_cache=kv_cache_list,
-                start_pos=current_token_start_pos
-            )
-      
+            if use_kv_cache:
+                # With KV cache: only process the new token
+                decode_step_output = self.decoder(
+                    next_token_embed,
+                    attention_mask=attention_mask,
+                    kv_cache=kv_caches,
+                    current_position_ids=current_token_start_pos
+                )
+            else:
+                # Without KV cache: process the entire sequence from scratch
+                # Reconstruct the full sequence: image + prompt + generated tokens so far
+                generated_token_embeds = torch.cat([self.decoder.token_embedding(tid) for tid in newly_generated_ids_list], dim=1)
+                full_sequence_embeds = torch.cat([initial_combined_embeds, generated_token_embeds], dim=1)
+
+                decode_step_output = self.decoder(
+                    full_sequence_embeds,
+                    attention_mask=attention_mask,
+                    kv_cache=kv_caches,
+                    current_position_ids=current_token_start_pos
+                )
+
+            current_token_start_pos += 1
+
             last_token_output = decode_step_output[:, -1, :] 
-            
+
             # Apply head to get logits (if model is in embedding mode)
             if not self.decoder.lm_use_tokens:
                 current_logits = self.decoder.head(last_token_output)
             else:
                 current_logits = last_token_output
-        
+
         if not newly_generated_ids_list: # Handle case where max_new_tokens might be 0
             return torch.empty((batch_size,0), dtype=torch.long, device=input_ids.device)
 
