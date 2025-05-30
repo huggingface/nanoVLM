@@ -30,7 +30,7 @@ class VisionLanguageModel(nn.Module):
         self.MP = ModalityProjector(cfg)
         self.load_backbone = load_backbone
 
-    def forward(self, input_ids, image, attention_mask=None, targets=None):
+    def forward(self, input_ids, image, attention_mask=None, targets=None, is_training=True):
         image_embd = self.vision_encoder(image)
         image_embd = self.MP(image_embd)
 
@@ -48,7 +48,7 @@ class VisionLanguageModel(nn.Module):
             # Combine image and token attention masks
             attention_mask = torch.cat((image_attention_mask, attention_mask), dim=1)
 
-        logits, _ = self.decoder(combined_embd, attention_mask=attention_mask) # Not logits yet, but easier to return like this
+        logits, _ = self.decoder(combined_embd, attention_mask=attention_mask, is_training=is_training) # Not logits yet, but easier to return like this
 
         loss = None
         if targets is not None:
@@ -87,7 +87,8 @@ class VisionLanguageModel(nn.Module):
             initial_combined_embeds,
             attention_mask=attention_mask,
             kv_cache=None,
-            start_pos=0
+            start_pos=0,
+            is_training=False
         )
         
         last_token_output_from_prefill = prefill_output[:, -1, :] 
@@ -127,7 +128,8 @@ class VisionLanguageModel(nn.Module):
                 next_token_embed,
                 attention_mask=attention_mask,
                 kv_cache=kv_cache_list,
-                start_pos=current_token_start_pos
+                start_pos=current_token_start_pos,
+                is_training=False
             )
       
             last_token_output = decode_step_output[:, -1, :] 
