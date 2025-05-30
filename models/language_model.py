@@ -112,7 +112,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         if not self.sdpa:
             print("Warning: scaled dot product attention not available, using standard attention in LM.")
 
-    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
+    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None, is_training=True):
         is_prefill = block_kv_cache is None
 
         B, T_curr, C = x.size() # T_curr is the sequence length of the current input x
@@ -124,21 +124,26 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # Apply rotary embeddings to the current q and k
         q, k_rotated = apply_rotary_pos_embd(q_curr, k_curr, cos, sin)
 
-        # Check if we can use cached keys and values
-        if not is_prefill and block_kv_cache['key'] is not None:
-            # Concatenate with cached K, V
-            # k_rotated and v_curr are for the new token(s)
-            k = block_kv_cache['key']
-            v = block_kv_cache['value']
-            k = torch.cat([k, k_rotated], dim=2)
-            v = torch.cat([v, v_curr], dim=2)
-            block_kv_cache['key'] = k
-            block_kv_cache['value'] = v
+        # create and update block_kv_cache only during inference
+        if not is_training:
+            # Check if we can use cached keys and values
+            if not is_prefill and block_kv_cache['key'] is not None:
+                # Concatenate with cached K, V
+                # k_rotated and v_curr are for the new token(s)
+                k = block_kv_cache['key']
+                v = block_kv_cache['value']
+                k = torch.cat([k, k_rotated], dim=2)
+                v = torch.cat([v, v_curr], dim=2)
+                block_kv_cache['key'] = k
+                block_kv_cache['value'] = v
+            else:
+                # No cache, this is the first pass (prefill)
+                k = k_rotated
+                v = v_curr
+                block_kv_cache = {'key': k, 'value': v}
         else:
-            # No cache, this is the first pass (prefill)
             k = k_rotated
             v = v_curr
-            block_kv_cache = {'key': k, 'value': v}
 
         # Repeat K, V for Grouped Query Attention
         k_exp = k.repeat_interleave(self.n_kv_groups, dim=1) # (B, n_heads, T_kv, head_dim)
@@ -215,10 +220,10 @@ class LanguageModelBlock(nn.Module):
         self.norm1 = RMSNorm(cfg) # Input Norm
         self.norm2 = RMSNorm(cfg) # Post Attention Norm
     
-    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
+    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None, is_training=True):
         res = x
         x = self.norm1(x)
-        x, block_kv_cache = self.attn(x, cos, sin, attention_mask, block_kv_cache)
+        x, block_kv_cache = self.attn(x, cos, sin, attention_mask, block_kv_cache, is_training)
         x = res + x
 
         res = x
@@ -258,7 +263,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x, attention_mask=None, kv_cache=None, start_pos=0):
+    def forward(self, x, attention_mask=None, kv_cache=None, start_pos=0, is_training=True):
         if self.lm_use_tokens:
             x = self.token_embedding(x)
 
@@ -274,7 +279,7 @@ class LanguageModel(nn.Module):
             kv_cache = [None] * len(self.blocks)
 
         for i, block in enumerate(self.blocks):
-            x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i])
+            x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i], is_training)
 
         x = self.norm(x)
 
@@ -296,7 +301,8 @@ class LanguageModel(nn.Module):
             generated_outputs, 
             attention_mask=None,
             kv_cache=None,
-            start_pos=0
+            start_pos=0,
+            is_training=False
         )
         last_output = prompt_output[:, -1, :]
 
@@ -321,7 +327,8 @@ class LanguageModel(nn.Module):
                 next_output, 
                 attention_mask=None,
                 kv_cache=kv_cache_list,
-                start_pos=current_token_start_pos
+                start_pos=current_token_start_pos,
+                is_training=False
             )
             last_output = decode_step_output[:, -1, :] 
     
