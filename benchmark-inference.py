@@ -20,7 +20,7 @@ if __name__ == "__main__":
     model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-222M").to(device)
     model.eval()
     
-    tokenizer = get_tokenizer(model.cfg.lm_tokenizer)
+    tokenizer = get_tokenizer(model.cfg.lm_tokenizer, model.cfg.vlm_extra_tokens)
     image_processor = get_image_processor(model.cfg.vit_img_size)
 
     text = "What is this?"

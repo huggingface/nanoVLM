@@ -1,9 +1,14 @@
 import torch
 
 class VQACollator(object):  # Visual Question Answering Collator
-    def __init__(self, tokenizer, max_length):
+    def __init__(self, tokenizer, max_length, image_token_length):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.image_token_length = image_token_length
+
+        self.boi_token_str = tokenizer.boi_token 
+        self.eoi_token_str = tokenizer.eoi_token
+        self.image_token_str = tokenizer.image_token
     
     def __call__(self, batch):
         images = [item["image"] for item in batch]
@@ -13,15 +18,17 @@ class VQACollator(object):  # Visual Question Answering Collator
         # Stack images
         images = torch.stack(images)
 
-        # Create inputs by concatenating the question and answer
+        # Create inputs by concatenating special image tokens, question, and answer
         input_sequences = []
         for i in range(len(texts)):
-            input_sequences.append(f"{texts[i]}{answers[i]}")
+            # Construct the image token segment string
+            image_segment_str = self.image_token_str * self.image_token_length
+            input_sequences.append(f"{self.boi_token_str}{image_segment_str}{self.eoi_token_str}{texts[i]}{answers[i]}")
 
         encoded_full_sequences = self.tokenizer.batch_encode_plus(
             input_sequences,
             padding="max_length",
-            padding_side="left",
+            padding_side="left", # Ensure padding is on the left
             return_tensors="pt",
             truncation=True,
             max_length=self.max_length,
@@ -31,39 +38,46 @@ class VQACollator(object):  # Visual Question Answering Collator
         input_ids = encoded_full_sequences["input_ids"]
         attention_mask = encoded_full_sequences["attention_mask"]
         labels = input_ids.clone()
-        labels[:, :-1] = input_ids[:, 1:].clone()
-        labels[:, -1] = -100 #self.tokenizer.pad_token_id
+        labels[:, :-1] = input_ids[:, 1:].clone() # Shift labels for causal LM
+        labels[:, -1] = -100 # Last token has no target
 
-        # The tokenizer has different behavior for padding and truncation:
-        # 1. If the full text (answer + question) is shorter than the max length, it gets padded on the left
-        # 2. If the full text is longer than the max length, it gets truncated on the right
-        # Therefore, I need to handle multiple cases, this is the different scenarios:
-        # If the full text is longer than the max length, we need to set the labels to -100 for the whole sample (we want to ignore the whole sample)
-        # If the full text is shorter than the max length, we need to set the labels to -100 only for the question part, and create causal language modeling labels for the answer part, taking into account the padding
-
-        # Determine if sequences were truncated
+        # Determine original lengths before padding/truncation to handle truncation cases
         original_lengths = [len(self.tokenizer.encode(seq)) for seq in input_sequences]
         
+        # Calculate the number of tokens for the special image prefix (BOI, IMGs, EOI)
+        # This encoding should not add other special tokens like BOS/EOS for length calculation.
+        special_image_prefix_str = f"{self.boi_token_str}{self.image_token_str * self.image_token_length}{self.eoi_token_str}"
+        num_special_prefix_tokens = len(self.tokenizer.encode(special_image_prefix_str, add_special_tokens=False))
+
         for i in range(len(batch)):
-            # Get the length of the question for this sample
-            question_length = len(self.tokenizer.encode(texts[i], add_special_tokens=False))
-            
             # Case 1: If sequence was truncated (original is longer than max_length)
             if original_lengths[i] > self.max_length:
-                # Set all labels to -100 to ignore this sample entirely
-                labels[i, :] = -100
-                #print(f"Sample {i} was truncated. Setting all labels to -100.")
+                labels[i, :] = -100 # Ignore this sample entirely
+                # print(f"Sample {i} truncated: original length {original_lengths[i]} exceeds max_length {self.max_length}. Ignoring sample.")
                 continue
             
             # Case 2: Sequence fits within max_length
-            # Use attention mask to find first non-padding token
-            # The first 1 in the attention mask marks the first non-padding token
+            # Determine the length of the question part for this sample
+            question_part_length = len(self.tokenizer.encode(texts[i], add_special_tokens=False))
+            
+            # Find the position of the first actual token (non-padding)
+            # attention_mask might be all zeros if the sequence is fully truncated (handled above) or empty.
+            # Ensure there's at least one non-padding token to avoid errors with .nonzero().
+            if attention_mask[i].sum() == 0: # Should not happen if not truncated and not empty.
+                labels[i, :] = -100 # Defensive: if no actual tokens, ignore sample
+                continue
+            
             first_token_pos = attention_mask[i].nonzero(as_tuple=True)[0][0].item()
             
-            # Set labels for padding and question part to -100 (don't predict these), substracting 1 to account for the left shift
-            question_end = first_token_pos + question_length - 1 
-            labels[i, :question_end] = -100
-            # labels[i, original_lengths[i]-1:] = -100 # If you are using right padding
+            # The total length of the "prompt" part (special image tokens + question)
+            total_prompt_length = num_special_prefix_tokens + question_part_length
+            
+            # Mask labels for padding tokens (before first_token_pos) and the entire prompt part.
+            # The prompt part starts at first_token_pos and has length total_prompt_length.
+            # So, tokens from index 0 up to (first_token_pos + total_prompt_length - 1) should be masked.
+            # The slicing labels[i, :N] masks indices 0 to N-1.
+            mask_until_idx = first_token_pos + total_prompt_length - 1
+            labels[i, :mask_until_idx] = -100
 
         return {
             "image": images,
@@ -73,8 +87,13 @@ class VQACollator(object):  # Visual Question Answering Collator
         }
 
 class MMStarCollator(object):  # https://huggingface.co/datasets/Lin-Chen/MMStar
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, image_token_length):
         self.tokenizer = tokenizer
+        self.image_token_length = image_token_length
+
+        self.boi_token_str = tokenizer.boi_token 
+        self.eoi_token_str = tokenizer.eoi_token
+        self.image_token_str = tokenizer.image_token
     
     def __call__(self, batch):
         images = [item["image"] for item in batch]
@@ -83,9 +102,16 @@ class MMStarCollator(object):  # https://huggingface.co/datasets/Lin-Chen/MMStar
 
         # Stack images
         images = torch.stack(images)
+
+        # Create input sequences with image placeholders
+        question_sequences = []
+        image_segment_str = self.image_token_str * self.image_token_length
+        for question_text in questions:
+            question_sequences.append(f"{self.boi_token_str}{image_segment_str}{self.eoi_token_str}{question_text}")
+        
         
         encoded_question_sequences = self.tokenizer.batch_encode_plus(
-            questions,
+            question_sequences,
             padding=True,
             padding_side="left",
             return_tensors="pt"

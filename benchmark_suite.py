@@ -45,7 +45,7 @@ def benchmark_vlm(
         vlm_load_backbone_weights=True
     )
     model = VisionLanguageModel(cfg, load_backbone=True).to(device).eval()
-    tokenizer = get_tokenizer(cfg.lm_tokenizer)
+    tokenizer = get_tokenizer(cfg.lm_tokenizer, cfg.vlm_extra_tokens)
     vit_img_size = int(cfg.vit_model_type[-3:])  # Kinda hacky, works for siglip models
     image_processor = get_image_processor(vit_img_size)
 

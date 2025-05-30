@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -19,7 +19,9 @@ class VLMConfig:
     lm_rms_eps: float = 1e-5
     lm_re_base: int = 100000
     lm_max_position_embeddings: int = 8192
-    lm_vocab_size: int = 49152
+    lm_base_vocab_size: int = 49152
+    extra_token_amount: int = 3  # Number of extra tokens for the VLM (image start, image end, image token)
+    lm_vocab_size: int = lm_base_vocab_size + extra_token_amount # Not a great way to do this, but it works for now (vlm_extra_tokens cannot be a dict, since this is mutable, and a Field has no len() function)
     lm_n_heads: int = 9
     lm_n_kv_heads: int = 3
     lm_dropout: float = 0.0
@@ -27,7 +29,7 @@ class VLMConfig:
     lm_attn_scaling: float = 1.0
     IMAGE_TOKEN_LENGTH: int = 49
     TOTAL_SEQUENCE_LENGTH: int = 128
-    lm_max_length: int = TOTAL_SEQUENCE_LENGTH - IMAGE_TOKEN_LENGTH  # Maximum length for the language model, derived from TOTAL_SEQUENCE_LENGTH and IMAGE_TOKEN_LENGTH
+    lm_max_length: int = TOTAL_SEQUENCE_LENGTH # - IMAGE_TOKEN_LENGTH If using replacement image tokens, we don't need to substract them here anymore # Maximum length for the language model, derived from TOTAL_SEQUENCE_LENGTH and IMAGE_TOKEN_LENGTH
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
     lm_model_type: str = 'HuggingFaceTB/SmolLM2-135M'
@@ -36,9 +38,10 @@ class VLMConfig:
 
     mp_pixel_shuffle_factor: int = 2
 
+    vlm_extra_tokens: dict[str, str] = field(default_factory=lambda: {"image_token": "<|image|>", "boi_token": "<|image_start|>", "eoi_token": "<|image_end|>"})
     vlm_load_backbone_weights: bool = True
     vlm_checkpoint_path: str = 'checkpoints'
-    hf_repo_name: str = 'nanoVLM'
+    hf_repo_name: str = None #'nanoVLM'
 
 
 @dataclass
@@ -48,13 +51,13 @@ class TrainConfig:
     data_cutoff_idx: int = None
     val_ratio: float = 0.025
     batch_size: int = 256
-    gradient_accumulation_steps: int = 1
+    gradient_accumulation_steps: int = 8
     mmstar_batch_size: int = 32
     max_grad_norm: float = None
     eval_in_epochs: bool = True
     eval_interval: int = 250
     epochs: int = 5
-    compile: bool = False
+    compile: bool = True
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
     train_dataset_path: str = 'HuggingFaceM4/the_cauldron'
     train_dataset_name: tuple[str, ...] = ("ai2d", "aokvqa", "chart2text", "chartqa", "clevr", "cocoqa", "datikz", "diagram_image_to_text", "docvqa", "dvqa", "figureqa", "finqa", "geomverse", "hateful_memes", "hitab", "iam", "iconqa", "infographic_vqa", "intergps", "localized_narratives", "mapqa", "multihiertt", "ocrvqa", "plotqa", "raven", "rendered_text", "robut_sqa", "robut_wikisql", "robut_wtq", "scienceqa", "screen2words", "st_vqa", "tabmwp", "tallyqa", "tat_qa", "textcaps", "textvqa", "tqa", "vistext", "visual7w", "visualmrc", "vqarad", "vqav2", "vsr", "websight")
