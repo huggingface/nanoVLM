@@ -1,0 +1,13 @@
+# Core dependencies
+torch>=2.1.0
+numpy
+torchvision
+pillow
+datasets
+huggingface-hub
+transformers
+wandb
+
+# Optional dependencies for evaluation
+# Uncomment to enable lmms-eval integration
+# lmms-eval>=0.3.0

@@ -24,3 +24,5 @@ uv.lock
 checkpoints/
 notebooks/
 *.slurm
+CLAUDE.md
+.vscode
