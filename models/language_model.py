@@ -124,8 +124,8 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # Apply rotary embeddings to the current q and k
         q, k_rotated = apply_rotary_pos_embd(q_curr, k_curr, cos, sin)
 
-        # update KV cache only during inference
-        if not torch.is_grad_enabled():
+        # update KV cache only during validation and inference
+        if not self.training:
             # Check if we can use cached keys and values
             if not is_prefill and block_kv_cache['key'] is not None:
                 # Concatenate with cached K, V
