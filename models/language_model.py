@@ -5,12 +5,34 @@ import torch.nn.functional as F
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L69
 class RMSNorm(nn.Module):
+    """
+    Root Mean Square Layer Normalization (RMSNorm).
+
+    Normalizes the input across the last dimension using RMS normalization,
+    which scales the input without subtracting the mean. Commonly used as a
+    lighter alternative to LayerNorm in transformer models.
+
+    Args:
+        cfg: A configuration object containing:
+            - lm_hidden_dim (int): The dimensionality of the model hidden states. 
+            - lm_rms_eps (float): A small constant to avoid division by zero.
+    """
     def __init__(self, cfg):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(cfg.lm_hidden_dim))
         self.eps = cfg.lm_rms_eps
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for RMSNorm.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, sequence_length, lm_hidden_dim).
+
+        Returns:
+            torch.Tensor: Normalized tensor of the same shape as input.
+        """
+        # Compute inverse of RMS: square the tensor element-wise, mean is computed across lm_hidden_dim.
         irms = torch.rsqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps) # inverse of RMS
         x = x * irms * self.weight
 
@@ -19,6 +41,19 @@ class RMSNorm(nn.Module):
 # Multiple derivates of Rotary Embeddings by now, this is a basic one with linear scaling to context length
 # e.g. https://github.com/huggingface/smollm/blob/main/vision/m4/models/vllama3/modeling_vllama3.py#L190
 class RotaryEmbedding(nn.Module):
+    """
+        Compute Rotary Embedding to introduce positional dependency to input sequence without additional training parameters and 
+        relative distance of token position ids through angle rotation.
+
+        Args:
+            cfg: Configuration object containing:
+                - lm_hidden_dim (int): Hidden dimension size.
+                - lm_n_heads (int): Number of attention heads.
+                - lm_re_base (float): Base for rotary embedding frequencies.
+                - lm_max_position_embeddings (int): Max sequence length supported for rotary embedding.
+                - lm_attn_scaling (float): Attention scaling factor.
+        """
+    
     def __init__(self, cfg):
         super().__init__()
         assert cfg.lm_hidden_dim % cfg.lm_n_heads == 0, "Hidden dimension must be divisible by number of heads"
@@ -34,9 +69,21 @@ class RotaryEmbedding(nn.Module):
         self.attention_scaling = cfg.lm_attn_scaling
 
     @torch.no_grad()
-    def forward(self, position_ids):
+    def forward(self, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute rotary positional embeddings (cosine and sine components).
+
+        Args:
+            position_ids (torch.Tensor): Tensor of shape (batch_size, seq_len) containing position indices.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Tuple of two tensors (cos, sin), each of shape
+                                  (batch_size, seq_len, dim), representing rotary embeddings.
+        """
+
         batch_size, seq_len = position_ids.shape
         # Dynamic scaling for longer sequences
+        # Divide the angle frequency to fit more rotation into the embedding space.
         max_seq = position_ids.max() + 1
         if max_seq > self.original_max_seq_len:
             scale = max_seq / self.original_max_seq_len
@@ -63,13 +110,45 @@ class RotaryEmbedding(nn.Module):
         
         return cos, sin
 
-# Rotates half the hidden dims of the input by swapping and negating dimensions.
-def rotate_half(x):
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    """
+    Rotates the input by dividing the hidden dimension to two, then swapping and negating dimensions.
+    """
     x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
 
 # Apply rotary position embeddings to queries and keys.
-def apply_rotary_pos_embd(q, k, cos, sin, unsqueeze_dim=1):
+def apply_rotary_pos_embd(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim:int=1)-> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Applies rotary positional embeddings to query and key tensors in attention mechanisms.
+
+    Rotary positional embeddings inject position-dependent rotations into query and key vectors,
+    enabling transformers to encode positional information effectively without explicit positional encoding.
+
+    Args:
+        q (torch.Tensor): Query tensor with shape [batch_size, num_heads, seq_len, head_dim].
+        k (torch.Tensor): Key tensor with shape [batch_size, num_heads, seq_len, head_dim].
+        cos (torch.Tensor): Precomputed cosine positional embeddings with shape [batch_size, seq_len, head_dim].
+        sin (torch.Tensor): Precomputed sine positional embeddings with shape [batch_size, seq_len, head_dim].
+        unsqueeze_dim (int, optional): Dimension index to unsqueeze `cos` and `sin` to enable broadcasting.
+                                      Defaults to 1 (typically the heads dimension).
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: The rotated query and key tensors (`q_embed`, `k_embed`), 
+                                           each with the same shape as the input tensors.
+
+    How it works:
+        - `cos` and `sin` tensors are unsqueezed at `unsqueeze_dim` to broadcast across attention heads.
+        - Rotary embeddings apply a complex number rotation in the embedding space using:
+            rotated = (original * cos) + (rotate_half(original) * sin)
+        - `rotate_half` performs a specific half-dimension rotation on the input tensor.
+        - This operation encodes relative position information in q and k without adding explicit positional vectors.
+
+    Example:
+        q_embed, k_embed = apply_rotary_pos_embd(q, k, cos, sin)
+
+    """
+
     # We need to make sure cos and sin can be properly broadcast
     # to the shape of q and k by adding the heads dimension
     cos = cos.unsqueeze(unsqueeze_dim)  # [batch_size, 1, seq_len, head_dim]
@@ -85,6 +164,19 @@ def apply_rotary_pos_embd(q, k, cos, sin, unsqueeze_dim=1):
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L214
 # https://github.com/huggingface/smollm/blob/main/vision/m4/models/vllama3/modeling_vllama3.py#L382
 class LanguageModelGroupedQueryAttention(nn.Module):
+    """
+    Implements Grouped Query Attention (GQA) as used in some transformer-based language models.
+
+    GQA reduces computation by using fewer key-value heads than query heads,
+    grouping multiple query heads to share the same key-value heads.
+
+    Args:
+        cfg: Configuration object containing:
+            - lm_n_heads (int): Number of query heads.
+            - lm_n_kv_heads (int): Number of key-value heads.
+            - lm_hidden_dim (int): Hidden embedding dimension.
+            - lm_dropout (float): Dropout rate.
+    """
     def __init__(self, cfg):
         super().__init__()
 
@@ -112,7 +204,26 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         if not self.sdpa:
             print("Warning: scaled dot product attention not available, using standard attention in LM.")
 
-    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, attention_mask=None, block_kv_cache=None) -> tuple[torch.Tensor, dict]:
+        """
+        Forward pass for grouped query attention.
+
+        Args:
+            x (Tensor): Input tensor of shape (B, T_curr, C), where
+                        B = batch size,
+                        T_curr = current sequence length,
+                        C = embedding dimension.
+            cos (Tensor): Rotary embedding cosines, shape compatible with q and k.
+            sin (Tensor): Rotary embedding sines, shape compatible with q and k.
+            attention_mask (Tensor, optional): Attention mask tensor of shape (B, total_kv_length),
+                                               with 1 for tokens to attend to and 0 for padding.
+            block_kv_cache (dict, optional): Cache dict with 'key' and 'value' tensors for autoregressive decoding.
+
+        Returns:
+            tuple[Tensor, dict]:
+                - Output tensor after attention and projection, shape (B, T_curr, C).
+                - Updated block_kv_cache dict for caching key-value states.
+        """
         is_prefill = block_kv_cache is None
 
         B, T_curr, C = x.size() # T_curr is the sequence length of the current input x
@@ -189,6 +300,26 @@ class LanguageModelGroupedQueryAttention(nn.Module):
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L160
 class LanguageModelMLP(nn.Module):
+    """
+    Implements the feed-forward network (MLP) block used in transformer-based language models.
+
+    This MLP uses a gated activation mechanism where two separate linear projections
+    are applied to the input: one passed through an activation function (gate_proj),
+    and the other as is (up_proj). Their element-wise product is then projected back
+    to the embedding dimension (down_proj).
+
+    Args:
+        cfg: Configuration object containing:
+            - lm_hidden_dim (int): The embedding dimension size.
+            - lm_inter_dim (int): The intermediate dimension size for the MLP.
+
+    Attributes:
+        activation_fn (Callable): The activation function used (SiLU).
+        gate_proj (nn.Linear): Linear projection for gating pathway.
+        up_proj (nn.Linear): Linear projection for upscaling pathway.
+        down_proj (nn.Linear): Linear projection for downscaling back to embedding dim.
+    """
+
     def __init__(self, cfg):
         super().__init__()
         self.embd_dim = cfg.lm_hidden_dim
@@ -200,6 +331,16 @@ class LanguageModelMLP(nn.Module):
         self.down_proj = nn.Linear(self.inter_dim, self.embd_dim, bias=False)
 
     def forward(self, x):
+        """
+        Forward pass through the gated MLP block.
+
+        Args:
+            x (Tensor): Input tensor of shape (batch_size, seq_length, embd_dim).
+
+        Returns:
+            Tensor: Output tensor of shape (batch_size, seq_length, embd_dim),
+                    after gated MLP transformation.
+        """
         gate = self.activation_fn(self.gate_proj(x))
         x = self.up_proj(x)
         x = self.down_proj(gate * x)
@@ -215,7 +356,24 @@ class LanguageModelBlock(nn.Module):
         self.norm1 = RMSNorm(cfg) # Input Norm
         self.norm2 = RMSNorm(cfg) # Post Attention Norm
     
-    def forward(self, x, cos, sin, attention_mask=None, block_kv_cache=None):
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, attention_mask: torch.Tensor=None, block_kv_cache: dict=None):
+        """
+        Forward pass of the Transformer block.
+
+        Args:
+            x (Tensor): Input tensor of shape (batch_size, seq_len, hidden_dim).
+            cos (Tensor): Cosine positional embeddings for rotary embedding, shape
+                matching sequence length and head dimension.
+            sin (Tensor): Sine positional embeddings for rotary embedding, same shape as cos.
+            attention_mask (Tensor, optional): Attention mask of shape (batch_size, total_kv_length),
+                with 1 indicating tokens to attend to and 0 for padding tokens.
+            block_kv_cache (dict, optional): Key-value cache dict for cached keys and values
+                during decoding. If None, no cache is used.
+
+        Returns:
+            Tuple[Tensor, dict]: Output tensor after the block (same shape as input),
+                and the updated key-value cache dictionary.
+        """
         res = x
         x = self.norm1(x)
         x, block_kv_cache = self.attn(x, cos, sin, attention_mask, block_kv_cache)
@@ -258,7 +416,44 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x, attention_mask=None, kv_cache=None, start_pos=0):
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0):
+        """
+        Performs a forward pass through the language model.
+
+        Args:
+            x (Tensor): Input tensor. If `lm_use_tokens` is True, this should be
+                token indices with shape (batch_size, sequence_length).
+                If False, it should be embeddings of shape (batch_size, sequence_length, hidden_dim).
+            attention_mask (Tensor, optional): Mask tensor for attention to
+                specify which tokens to attend to, typically of shape
+                (batch_size, sequence_length). Default is None.
+            kv_cache (list[dict], optional): List of key-value caches for each transformer
+                block to enable efficient autoregressive decoding.
+                If None, no cache is used and new ones are created. Default is None.
+            start_pos (int, optional): The starting position index for the current input
+                sequence. Used to compute rotary positional embeddings correctly,
+                especially for cached sequences during generation. Default is 0.
+
+        Returns:
+            Tuple:
+                - Tensor: Output logits with shape (batch_size, sequence_length, vocab_size)
+                if `lm_use_tokens` is True, otherwise the hidden state embeddings
+                (batch_size, sequence_length, hidden_dim).
+                - list: Updated list of key-value caches, one for each transformer block,
+                useful for autoregressive decoding and incremental generation.
+
+        Behavior:
+            - If `lm_use_tokens` is True, the input token indices are first embedded.
+            - Rotary positional embeddings are generated for the current input positions,
+            which are passed along to each transformer block.
+            - For each transformer block, the input is processed along with
+            rotary embeddings, attention mask, and optional cached key-values.
+            - After processing all blocks, a final RMS normalization is applied.
+            - If tokens are used, the normalized hidden states are projected to logits
+            over the vocabulary.
+            - The method returns the logits or embeddings along with the updated
+            cache for efficient decoding.
+        """
         if self.lm_use_tokens:
             x = self.token_embedding(x)
 
@@ -286,7 +481,19 @@ class LanguageModel(nn.Module):
 
 
     @torch.inference_mode()
-    def generate(self, inputs, max_new_tokens=20):
+    def generate(self, inputs: torch.Tensor, max_new_tokens: int=20):
+        """
+        Generate tokens autoregressively from a given input sequence.
+
+        Args:
+            inputs (torch.Tensor): Input tensor containing token indices or embeddings.
+                Shape: (batch_size, sequence_length) or (sequence_length,) for a single sequence.
+            max_new_tokens (int): Number of new tokens to generate after the input sequence.
+
+        Returns:
+            torch.Tensor: The generated sequence, including the original inputs and newly generated tokens.
+                Shape: (batch_size, sequence_length + max_new_tokens)
+        """
         # Add batch dimension if needed
         if inputs.dim() == 1:
             inputs = inputs.unsqueeze(0)
