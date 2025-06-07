@@ -66,12 +66,18 @@ class VisionLanguageModel(nn.Module):
         return updated_token_embd
 
     def forward(self, input_ids, image, attention_mask=None, targets=None):
-        image_embd = self.vision_encoder(image)
-        image_embd = self.MP(image_embd) # [B, mp_image_token_length, D_lm]
+        if image is not None:
+            image_embd = self.vision_encoder(image)
+            image_embd = self.MP(image_embd) # [B, mp_image_token_length, D_lm]
 
-        token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
-        
-        updated_token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
+            token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
+            
+            updated_token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
+        else:
+            # If no image is provided, use token embeddings directly
+            print("WARNING: No image provided, using token embeddings directly")
+            token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
+            updated_token_embd = token_embd
 
         # The updated_token_embd is now the token_embd with image parts replaced.
         # The attention_mask comes from the collator and should already cover the full sequence.
@@ -89,15 +95,21 @@ class VisionLanguageModel(nn.Module):
     @torch.inference_mode()
     def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
 
-        # 1. Process image
-        image_embd = self.vision_encoder(image) # [B, T_img_feat, D_model]
-        image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
+        if image is not None:
+            # 1. Process image
+            image_embd = self.vision_encoder(image) # [B, T_img_feat, D_model]
+            image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
 
-        # 2. Embed initial text prompt tokens
-        prompt_token_embeds = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
+            # 2. Embed initial text prompt tokens
+            prompt_token_embeds = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
 
-        # 3. Combine image and text embeddings
-        initial_combined_embeds = self._replace_img_tokens_with_embd(input_ids, prompt_token_embeds, image_embd)
+            # 3. Combine image and text embeddings
+            initial_combined_embeds = self._replace_img_tokens_with_embd(input_ids, prompt_token_embeds, image_embd)
+        else:
+            # If no image is provided, use prompt token embeddings directly
+            print("WARNING: No image provided, using token embeddings directly")
+            prompt_token_embeds = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
+            initial_combined_embeds = prompt_token_embeds
 
         current_total_seq_len = initial_combined_embeds.size(1)
         batch_size = input_ids.size(0) # Or initial_combined_embeds.size(0)

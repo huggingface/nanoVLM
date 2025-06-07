@@ -53,11 +53,14 @@ uv init --bare --python 3.12
 uv sync --python 3.12
 source .venv/bin/activate
 uv add torch numpy torchvision pillow datasets huggingface-hub transformers wandb
+# Optional: for lmms-eval integration you have to install it from source, see section 'Evaluation with lmms-eval'
 ```
 
 If you prefer another environment manager, simply install these packages:  
 ```bash
 pip install torch numpy torchvision pillow datasets huggingface-hub transformers wandb
+# Optional: for lmms-eval integration you have to install it from source, see section 'Evaluation with lmms-eval'
+
 ```
 Dependencies: 
 - `torch` <3
@@ -80,7 +83,7 @@ which will use the default `models/config.py`.
 
 ## Generate
 
-To try a [trained model](https://huggingface.co/lusxvr/nanoVLM-222M), you can simply use the provided generate script
+To try a [trained model](https://huggingface.co/lusxvr/nanoVLM-450M), you can simply use the provided generate script
 ```bash
 python generate.py
 ```
@@ -102,6 +105,25 @@ Generation 4:  This is a cat sitting on the ground. I think this is a cat sittin
 Generation 5:  This is a cat sitting on the ground, which is covered with a mat. I think this is
 ```
 
+### Evaluation with lmms-eval
+
+nanoVLM now supports evaluation using the comprehensive lmms-eval toolkit:
+
+```bash
+# Install lmms-eval (has to be from source)
+uv pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git
+
+# Make sure you have your environment variables set correctly and you are logged in to HF
+export HF_HOME="<Path to HF cache>"
+huggingface-cli login
+
+# Evaluate a trained model on multiple benchmarks
+python evaluation.py --model_path lusxvr/nanoVLM-450M --tasks mmstar,mme
+
+# Enable lmms-eval during training for intermediate evaluation
+python train.py  # with use_lmms_eval=True in TrainConfig
+```
+
 ## Hub integration
 
 **nanoVLM** comes with handy methods to load and save the model from the Hugging Face Hub.
@@ -114,7 +136,7 @@ Here is how to load from a repo on the Hugging Face Hub. This is the recommended
 # Load pretrained weights from Hub
 from models.vision_language_model import VisionLanguageModel
 
-model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-222M")
+model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-450M")
 ```
 
 ### Push to hub

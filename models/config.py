@@ -63,3 +63,9 @@ class TrainConfig:
     test_dataset_path: str = "Lin-Chen/MMStar"
     wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
     log_wandb: bool = True
+    # LMMS-Eval integration
+    use_lmms_eval: bool = False  # Enable lmms-eval for additional benchmarks
+    lmms_eval_tasks: str | tuple[str, ...] = "mmstar"  # Tasks to evaluate ("mmstar", "mme" , "...")
+    lmms_eval_batch_size: int = 32  # Batch size for lmms-eval
+    lmms_eval_limit: int = None  # Limit examples per task (None for full eval)
+    save_lmms_results: bool = True  # Save detailed lmms-eval results

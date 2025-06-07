@@ -24,8 +24,9 @@ from data.processors import get_image_processor, get_tokenizer
 from models.vision_language_model import VisionLanguageModel
 import models.config as config
 import models.utils as utils
+from evaluation import run_lmms_evaluation
 
-#Otherwise, the tokenizer will through a warning
+#Otherwise, the tokenizer will throw a warning
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -202,12 +203,15 @@ def get_lr(it, max_lr, max_steps):
 def train(train_cfg, vlm_cfg):
     train_loader, val_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer, vlm_cfg.vlm_extra_tokens)
+    image_processor = get_image_processor(vlm_cfg.vit_img_size)
+
 
     total_dataset_size = len(train_loader.dataset)
     if train_cfg.log_wandb and is_master():
         run_name = get_run_name(train_cfg, vlm_cfg)
         if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
+
         run = wandb.init(
             entity=train_cfg.wandb_entity,
             project="nanoVLM",
@@ -346,7 +350,7 @@ def train(train_cfg, vlm_cfg):
                             _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
                         total_val_loss += loss.item()
-                    avg_val_loss = total_val_loss / len(val_loader)
+                    avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0
                     avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
                     if train_cfg.log_wandb and is_master():
                         run.log({"val_loss": avg_val_loss}, step=global_step)
@@ -354,11 +358,33 @@ def train(train_cfg, vlm_cfg):
                     if is_master() and global_step % (train_cfg.eval_interval*2) == 0:
                         eval_model = model.module if is_dist() else model  # unwrap the model for eval if DDP
                         epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
+                        
+                        # Run additional lmms-eval benchmarks if enabled
+                        lmms_results = {}
+                        if train_cfg.use_lmms_eval and train_cfg.lmms_eval_tasks:
+                            print(f"\nRunning lmms-eval on tasks: {train_cfg.lmms_eval_tasks}")
+                            eval_results = run_lmms_evaluation(
+                                model=eval_model,
+                                tokenizer=tokenizer,
+                                image_processor=image_processor,
+                                tasks=[train_cfg.lmms_eval_tasks] if isinstance(train_cfg.lmms_eval_tasks, str) else list(train_cfg.lmms_eval_tasks),
+                                device=device,
+                                batch_size=train_cfg.lmms_eval_batch_size,
+                                limit=train_cfg.lmms_eval_limit,
+                                output_path=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name, f"lmms_eval_step_{global_step}.json") if train_cfg.save_lmms_results else None,
+                            )
+                            if eval_results and "results" in eval_results:
+                                for task_name, task_results in eval_results["results"].items():
+                                    # Get the primary metric for each task
+                                    for metric_name, metric_value in task_results.items():
+                                        if isinstance(metric_value, (int, float)):
+                                            lmms_results[f"lmms_{task_name}_{metric_name.split(',')[0]}"] = metric_value
+                        
                         if epoch_accuracy > best_accuracy:
                             best_accuracy = epoch_accuracy
                             eval_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
                         if train_cfg.log_wandb and is_master():    
-                            run.log({"accuracy": epoch_accuracy}, step=global_step)
+                            run.log({"accuracy": epoch_accuracy, **lmms_results}, step=global_step)
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                     elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
