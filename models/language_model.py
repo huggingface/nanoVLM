@@ -185,6 +185,7 @@ class LanguageModelGroupedQueryAttention(nn.Module):
 
         return y
 
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L160
 class LanguageModelMLP(nn.Module):
     def __init__(self, cfg):
@@ -277,6 +278,27 @@ class LanguageModel(nn.Module):
             x = self.head(x)
 
         return x
+
+    def prefill(self, x, attention_mask=None, kv_cache: Optional[List[Union[StaticKVCache, DynamicKVCache]]] = None, current_position_ids: torch.Tensor = None):
+        if self.lm_use_tokens:
+            x = self.token_embedding(x)
+
+        # T_curr is the length of the current input sequence
+        # Create position_ids for the current sequence based on start_pos
+
+        cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
+
+        for i, block in enumerate(self.blocks):
+            x = block(x, cos, sin, attention_mask, kv_cache[i], current_position_ids)
+
+        x = self.norm(x)
+
+        # Compute logits if we are using tokens, otherwise stay in the embedding space
+        if self.lm_use_tokens:
+            x = self.head(x)
+
+        return x
+
 
 
     @torch.inference_mode()

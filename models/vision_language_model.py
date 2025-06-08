@@ -141,7 +141,7 @@ class VisionLanguageModel(nn.Module):
             attention_mask = casual_mask[None, None, current_position_ids[0]][..., :current_total_seq_len]
 
         # --- Multimodal Prefill Phase ---
-        prefill_output = self.decoder(
+        prefill_output = self.decoder.prefill(
             initial_combined_embeds,
             attention_mask=attention_mask,
             kv_cache=kv_caches,
