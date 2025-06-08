@@ -12,13 +12,29 @@ from torch.utils import benchmark
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float16
-use_torch_compile = False
+use_torch_compile = True
+use_kv_cache = True
+kv_cache_implementation = "static"
+
+
+if use_torch_compile:
+    if not use_kv_cache:
+        raise ValueError("KV cache must be enabled when using torch compile")
+    if kv_cache_implementation != "static":
+        raise ValueError("KV cache implementation must be static when using torch compile")
+
+torch._inductor.config.coordinate_descent_tuning = True
+torch._inductor.config.triton.unique_kernel_names = True
+torch._inductor.config.fx_graph_cache = True
+
+torch._logging.set_logs(graph_breaks=True, recompiles=True)
+
 
 print(f"Using device: {device} with dtype: {dtype}")
 
+
 def generate_tokens(tokens, image):
-    
-    gen = model.generate(tokens, image, max_new_tokens=1000)
+    gen = model.generate(tokens, image, max_new_tokens=1000, use_kv_cache=use_kv_cache, kv_cache_implementation=kv_cache_implementation)
 
 
 if __name__ == "__main__":
@@ -39,11 +55,12 @@ if __name__ == "__main__":
     image = image.unsqueeze(0).to(device, dtype)
 
     if use_torch_compile:
-        model.decoder = torch.compile(model.decoder, mode="reduce-overhead", fullgraph=True)
+        model.decoder.forward = torch.compile(model.decoder.forward, mode="max-autotune", fullgraph=True)
 
     # Warmup
     for i in range(3):
-        _ = model.generate(tokens, image, max_new_tokens=128)
+        print(f"Warmup {i+1}")
+        _ = model.generate(tokens, image, max_new_tokens=1000, use_kv_cache=True, kv_cache_implementation=kv_cache_implementation)
 
     time = benchmark.Timer(
         stmt="generate_tokens(tokens, image)",
