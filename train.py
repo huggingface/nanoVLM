@@ -24,8 +24,9 @@ from data.processors import get_image_processor, get_tokenizer
 from models.vision_language_model import VisionLanguageModel
 import models.config as config
 import models.utils as utils
+from evaluation import evaluate
 
-#Otherwise, the tokenizer will through a warning
+#Otherwise, the tokenizer will throw a warning
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -202,11 +203,11 @@ def train(train_cfg, vlm_cfg):
     train_loader, val_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer, vlm_cfg.vlm_extra_tokens, vlm_cfg.lm_chat_template)
 
+    run_name = get_run_name(train_cfg, vlm_cfg)
     total_dataset_size = len(train_loader.dataset)
-    if train_cfg.log_wandb and is_master():
-        run_name = get_run_name(train_cfg, vlm_cfg)
-        if train_cfg.data_cutoff_idx is None:
+    if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
+    if train_cfg.log_wandb and is_master():
         run = wandb.init(
             entity=train_cfg.wandb_entity,
             project="nanoVLM",
@@ -344,7 +345,7 @@ def train(train_cfg, vlm_cfg):
                             _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
                         total_val_loss += loss.item()
-                    avg_val_loss = total_val_loss / len(val_loader)
+                    avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0
                     avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
                     if avg_val_loss < best_val_loss:
                         best_val_loss = avg_val_loss
@@ -352,6 +353,23 @@ def train(train_cfg, vlm_cfg):
                     if train_cfg.log_wandb and is_master():
                         run.log({"val_loss": avg_val_loss}, step=global_step)
 
+                    lmms_results = {}
+                    if train_cfg.use_lmms_eval and global_step % (train_cfg.eval_interval*2) == 0:
+                        eval_results = evaluate(
+                            model=model.module if is_dist() else model,
+                            tasks=train_cfg.lmms_eval_tasks,
+                            limit=train_cfg.lmms_eval_limit,
+                            batch_size=train_cfg.lmms_eval_batch_size,
+                            process_with_media=True,
+                            device=device,
+                        )
+
+                        if is_master() and eval_results and "results" in eval_results[0]:
+                            for task_name, task_results in eval_results[0]["results"].items():
+                                for metric_name, metric_value in task_results.items():
+                                    if isinstance(metric_value, (int, float)):
+                                        lmms_results[f"lmms_{task_name}_{metric_name.split(',')[0]}"] = metric_value
+                        
                     if is_master() and global_step % (train_cfg.eval_interval*2) == 0:
                         eval_model = model.module if is_dist() else model  # unwrap the model for eval if DDP
                         epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
@@ -360,8 +378,9 @@ def train(train_cfg, vlm_cfg):
                             save = True
                         if save:
                             eval_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
+                        
                         if train_cfg.log_wandb and is_master():    
-                            run.log({"accuracy": epoch_accuracy}, step=global_step)
+                            run.log({"accuracy": epoch_accuracy, **lmms_results}, step=global_step)
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                     elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
                         print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
@@ -425,8 +444,8 @@ def main():
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
     parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
     parser.add_argument('--compile', type=bool, help='Use torch.compile to optimize the model')
+    parser.add_argument('--log_wandb', type=bool, help='Log to wandb')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
-    parser.add_argument('--log_wandb', type=bool, default=True, help='Log to wandb')
 
     args = parser.parse_args()
 
