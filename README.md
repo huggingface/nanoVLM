@@ -77,7 +77,7 @@ To train nanoVLM, you can simply use the provided training script. After trainin
 ```bash
 wandb login --relogin
 huggingface-cli login
-torchrun --nproc_per_node=1 train.py
+python train.py
 ```
 which will use the default `models/config.py`.
 
