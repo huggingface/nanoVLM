@@ -89,6 +89,8 @@ python generate.py
 ```
 or, to use distributed data parallel with 8 gpus, you can simply run:
 ```bash
+python train.py
+OR
 torchrun --nproc_per_node=8 train.py
 ```
 
