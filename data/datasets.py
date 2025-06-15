@@ -1,6 +1,9 @@
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
+import threading
+from queue import Queue
+from typing import Iterator
 
 
 class BaseDataset(Dataset):
@@ -135,16 +138,86 @@ class MMStarDataset(BaseDataset):  # https://huggingface.co/datasets/Lin-Chen/MM
 
 class ConstantLengthDataset(IterableDataset):
     def __init__(
-        self, dataset, infinite=False, seq_length=1024, num_of_sequences=1024
+        self,
+        dataset, infinite: bool = False, seq_length: int = 1024, num_of_sequences: int = 1024, queue_size: int = 2048,
     ):
         self.dataset = dataset
         self.seq_length = seq_length
         self.max_length = seq_length * num_of_sequences
-        self.epoch = 0
+        self.epoch = 0  # only advanced when infinite=True
         self.infinite = infinite
+        self.queue_size = queue_size
+        self._sentinel = object()
 
     def __len__(self):
         return int(len(self.dataset) * 256/self.seq_length)
+
+    def __iter__(self) -> Iterator[dict]:
+        """
+        Returns a consumer iterator that drains `self._queue`.
+        A background thread keeps that queue topped up.
+        """
+        queue: Queue = Queue(maxsize=self.queue_size)
+
+        producer = threading.Thread(
+            target=self._producer, args=(queue), daemon=True
+        )
+        producer.start()
+
+        while True:
+            sample = queue.get()
+            if sample is self._sentinel:
+                break
+            yield sample
+
+    def _producer(self, queue: Queue):
+        """Runs in a separate daemon thread and keeps `queue` full."""
+        iterator = iter(self.dataset)
+        more_examples = True
+
+        while more_examples:
+            # ------------- 1) pull raw samples until we have enough -------- #
+            buffer, buffer_len = [], 0
+            while buffer_len < self.max_length:
+                try:
+                    sample = next(iterator)
+                except StopIteration:
+                    if self.infinite:
+                        iterator = iter(self.dataset)
+                        self.epoch += 1
+                        continue
+                    else:
+                        more_examples = False
+                        break
+
+                if len(sample["input_ids"]) > self.seq_length:
+                    continue  # skip overly long samples
+
+                buffer.append(sample)
+                buffer_len += len(sample["input_ids"])
+
+            if not buffer:
+                break  # nothing left and not infinite
+
+            # ------------- 2) run greedy knapsack & pack groups ------------ #
+            lengths = [len(x["input_ids"]) for x in buffer]
+            groups = self._balanced_greedy_knapsack(lengths, self.seq_length, delta=5)
+
+            for g in groups:
+                packed = self._pack_one_group(g, buffer, self.seq_length)
+
+                # put blocks if queue is full.
+                queue.put(
+                    {
+                        "input_ids": packed[0],
+                        "labels": packed[1],
+                        "attention_mask": packed[2],
+                        "images": packed[3],
+                    }
+                )
+
+        # finished → unblock consumer
+        queue.put(self._sentinel)
 
     def _balanced_greedy_knapsack(self, lengths, L, delta=0):
         # keep the position while sorting
@@ -186,49 +259,3 @@ class ConstantLengthDataset(IterableDataset):
             raise ValueError(f"Packed length {len(ids)} > max_len {max_len}")
 
         return torch.stack(ids), torch.stack(lbl), torch.stack(am), ims
-
-    def __iter__(self):
-        iterator = iter(self.dataset)
-        more_examples = True
-        while more_examples:
-            buffer, buffer_len = [], 0
-            while True:
-                if buffer_len >= self.max_length:
-                    break
-                try:
-                    next_sample = next(iterator)
-                    if len(next_sample["input_ids"]) > self.seq_length:
-                        continue  # Discard samples that are too long
-                    buffer.append(next_sample)
-                    buffer_len += len(next_sample["input_ids"])
-                except StopIteration:
-                    if self.infinite:
-                        iterator = iter(self.dataset)
-                        self.epoch += 1
-                    else:
-                        more_examples = False
-                        break
-
-            # 1) run knapsack on the lengths
-            lengths = list(map(lambda x: len(x["input_ids"]), buffer))
-            groups  = self._balanced_greedy_knapsack(lengths, self.seq_length, delta=5)
-
-            # 2) build new (packed) lists
-            packed_ids, packed_lbl, packed_am, packed_imgs = [], [], [], []
-
-            for g in groups:
-                ids, lbl, am, ims = self._pack_one_group(
-                    g, buffer, self.seq_length
-                )
-                packed_ids .append(ids)
-                packed_lbl .append(lbl)
-                packed_am  .append(am)
-                packed_imgs.append(ims)
-
-            for i in range(len(packed_ids)):
-                yield {
-                    "input_ids": packed_ids[i],
-                    "labels": packed_lbl[i],
-                    "attention_mask": packed_am[i],
-                    "images": packed_imgs[i]
-                }
