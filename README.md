@@ -53,11 +53,14 @@ uv init --bare --python 3.12
 uv sync --python 3.12
 source .venv/bin/activate
 uv add torch numpy torchvision pillow datasets huggingface-hub transformers wandb
+# Optional: for lmms-eval integration you have to install it from source, see section 'Evaluation with lmms-eval'
 ```
 
 If you prefer another environment manager, simply install these packages:  
 ```bash
 pip install torch numpy torchvision pillow datasets huggingface-hub transformers wandb
+# Optional: for lmms-eval integration you have to install it from source, see section 'Evaluation with lmms-eval'
+
 ```
 Dependencies: 
 - `torch` <3
@@ -74,13 +77,13 @@ To train nanoVLM, you can simply use the provided training script. After trainin
 ```bash
 wandb login --relogin
 huggingface-cli login
-python train.py
+torchrun --nproc_per_node=1 train.py
 ```
 which will use the default `models/config.py`.
 
 ## Generate
 
-To try a [trained model](https://huggingface.co/lusxvr/nanoVLM-222M), you can simply use the provided generate script
+To try a [trained model](https://huggingface.co/lusxvr/nanoVLM-450M), you can simply use the provided generate script
 ```bash
 python generate.py
 ```
@@ -102,6 +105,32 @@ Generation 4:  This is a cat sitting on the ground. I think this is a cat sittin
 Generation 5:  This is a cat sitting on the ground, which is covered with a mat. I think this is
 ```
 
+### Evaluation with lmms-eval
+
+nanoVLM now supports evaluation using the comprehensive [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) toolkit:
+
+```bash
+# Install lmms-eval (has to be from source)
+uv pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git
+
+# Make sure you have your environment variables set correctly and you are logged in to HF
+export HF_HOME="<Path to HF cache>"
+huggingface-cli login
+
+# Evaluate a trained model on multiple benchmarks
+python evaluation.py --model lusxvr/nanoVLM-450M --tasks mmstar,mme
+
+# If you want to use it during training, simply import the module and call it just as you would from the command line.
+# You can pass all the arguments you can also pass in the command line.
+# The evaluation during training works in the full DDP setup.
+from evaluation import evaluate
+results = evaluate(
+    model='lusxvr/nanoVLM-450M', # This can be either a checkpoint path or the model itself
+    tasks='mmstar,mmmu,ocrbench',
+    batch_size=128 # Adapt this to your GPU, needs to be passed to avoid an OOM Error
+)
+```
+
 ## Hub integration
 
 **nanoVLM** comes with handy methods to load and save the model from the Hugging Face Hub.
@@ -114,7 +143,7 @@ Here is how to load from a repo on the Hugging Face Hub. This is the recommended
 # Load pretrained weights from Hub
 from models.vision_language_model import VisionLanguageModel
 
-model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-222M")
+model = VisionLanguageModel.from_pretrained("lusxvr/nanoVLM-450M")
 ```
 
 ### Push to hub

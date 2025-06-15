@@ -14,6 +14,7 @@ wheels/
 wandb/
 logs/
 *.csv
+.vscode
 
 .python-version
 pyproject.toml
@@ -23,6 +24,5 @@ uv.lock
 
 checkpoints/
 notebooks/
+results/
 *.slurm
-
-benchmark_results.json

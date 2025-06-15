@@ -53,7 +53,7 @@ class VisionLanguageModel(nn.Module):
         image_embd = self.MP(image_embd) # [num_images, mp_image_token_length, D_lm]
 
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
-        
+
         updated_token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
         # The updated_token_embd is now the token_embd with image parts replaced.
@@ -71,7 +71,6 @@ class VisionLanguageModel(nn.Module):
 
     @torch.inference_mode()
     def generate(self, input_ids, image, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
-
         # 1. Process image
         image_embd = self.vision_encoder(image) # [B, T_img_feat, D_model]
         image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
