@@ -4,13 +4,11 @@ from torch.utils.data import Dataset, IterableDataset
 
 
 class BaseDataset(Dataset):
-    def __init__(self, dataset, tokenizer, image_processor, mp_image_token_length, rank=0, num_replicas=1):
+    def __init__(self, dataset, tokenizer, image_processor, mp_image_token_length):
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.mp_image_token_length = mp_image_token_length
-        self.rank = rank
-        self.num_replicas = num_replicas
 
         self.prefix_len = self._get_prefix_len()
 
