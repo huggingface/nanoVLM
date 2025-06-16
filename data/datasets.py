@@ -1,10 +1,10 @@
 import torch
 from PIL import Image
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import Dataset, IterableDataset, get_worker_info
 import threading
 from queue import Queue
 from typing import Iterator
-
+import itertools
 
 class BaseDataset(Dataset):
     def __init__(self, dataset, tokenizer, image_processor, mp_image_token_length):
@@ -157,10 +157,31 @@ class ConstantLengthDataset(IterableDataset):
         Returns a consumer iterator that drains `self._queue`.
         A background thread keeps that queue topped up.
         """
+        worker_info = get_worker_info()
+        worker_id = worker_info.id if worker_info else 0
+        num_workers = worker_info.num_workers if worker_info else 1
+
+        def make_base_iterator():
+            """Return a (sharded) iterator over the underlying dataset."""
+            all_indices = range(len(self.dataset))
+
+            # Shard the *indices* first, before any data is fetched.
+            if num_workers > 1:
+                worker_indices = itertools.islice(all_indices, worker_id, None, num_workers)
+            else:
+                worker_indices = all_indices
+
+            # Create an iterator that only calls __getitem__ for the assigned indices.
+            def sharded_item_iterator():
+                for idx in worker_indices:
+                    yield self.dataset[idx]
+
+            return sharded_item_iterator()        
+        
         queue: Queue = Queue(maxsize=self.queue_size)
 
         producer = threading.Thread(
-            target=self._producer, args=(queue), daemon=True
+            target=self._producer, args=(make_base_iterator, queue), daemon=True
         )
         producer.start()
 
@@ -170,9 +191,13 @@ class ConstantLengthDataset(IterableDataset):
                 break
             yield sample
 
-    def _producer(self, queue: Queue):
+    def _producer(
+            self,
+            make_iterator,  # a zero-arg lambda that returns a fresh (possibly sharded) iterator
+            queue: Queue,
+        ):
         """Runs in a separate daemon thread and keeps `queue` full."""
-        iterator = iter(self.dataset)
+        iterator = make_iterator()
         more_examples = True
 
         while more_examples:
@@ -183,7 +208,7 @@ class ConstantLengthDataset(IterableDataset):
                     sample = next(iterator)
                 except StopIteration:
                     if self.infinite:
-                        iterator = iter(self.dataset)
+                        iterator = make_iterator()
                         self.epoch += 1
                         continue
                     else:
