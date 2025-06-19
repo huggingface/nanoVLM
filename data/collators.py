@@ -4,109 +4,61 @@ import torch
 class BaseCollator(object):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        random_string_5_letters = "xzyvd"
-        random_string_chat_templated = self.tokenizer.apply_chat_template([{"role": "assistant", "content": random_string_5_letters}], tokenize=False, add_special_tokens=False)
-        random_string_location = random_string_chat_templated.find(random_string_5_letters)
 
-        self.prefix_len = len(self.tokenizer.encode(random_string_chat_templated[:random_string_location]))
-    
-    def prepare_inputs_and_loss_mask(self, batched_messages, max_length=None):
-        batch_token_ids: list[list[int]] = []
-        batch_masks:     list[list[int]] = []
-        batch_attentions: list[list[int]] = []
+    def _pad_batch(self, batch, max_length):
+        batch["input_ids"] = [torch.nn.functional.pad(ids, (max_length - len(ids), 0), value=self.tokenizer.pad_token_id) for ids in batch["input_ids"]]
+        batch["labels"]    = [torch.nn.functional.pad(labels, (max_length - len(labels), 0), value=self.tokenizer.pad_token_id) for labels in batch["labels"]]
+        batch["attention_mask"] = [torch.nn.functional.pad(attention_mask, (max_length - len(attention_mask), 0), value=0) for attention_mask in batch["attention_mask"]]
 
-        for messages in batched_messages:
-            conv_ids = self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_special_tokens=False,
-                    return_dict=True,
-                )
-            mask = [0] * len(conv_ids["input_ids"])
+    def prepare_batch(self, batch, max_length=None):
+        # batch is a list of dicts, each containing "input_ids", "attention_mask", "labels", "images"
+        # let's convert it to a dict of lists of tensors
+        batch = {k: [item[k] for item in batch] for k in batch[0]}
 
-            # Locate each assistant turn and flip its mask to 1
-            cursor = 0
-            for msg in messages:
-                segment_ids = self.tokenizer.apply_chat_template(
-                    [msg], tokenize=True, add_special_tokens=False
-                )
-                seg_len = len(segment_ids)
-
-                if msg["role"] == "assistant":
-                    start = cursor + self.prefix_len
-                    end   = cursor + seg_len
-                    mask[start:end] = [1] * (end - start)  # attend to these tokens
-
-                cursor += seg_len
-
-            batch_token_ids.append(conv_ids["input_ids"])
-            batch_masks.append(mask)
-            batch_attentions.append(conv_ids["attention_mask"])
-
-        if max_length is not None:  # We need to keep the tokens to allow for the img embed replacing logic to work. Otherwise, we would need to track which images correspond to long samples.
-            batch_token_ids = [ids[:max_length] for ids in batch_token_ids]
-            batch_masks = [m if len(m) <= max_length else [0]*max_length for m in batch_masks] # Ignore samples that are longer than max_length
-            batch_attentions = [a[:max_length] for a in batch_attentions]
+        if max_length is not None:
+            batch = self._discard_samples_that_are_too_long(batch, max_length)
 
         # Pad samples to max length
         if max_length is not None:
             max_len = max_length
         else:
-            max_len = max(map(len, batch_token_ids))
-        batch_token_ids = [[self.tokenizer.pad_token_id]*(max_len-len(ids)) + ids for ids in batch_token_ids]
-        batch_masks     = [[0]*(max_len-len(m)) + m         for m   in batch_masks]
-        batch_attentions = [[0]*(max_len-len(a)) + a         for a   in batch_attentions]
+            max_len = max(map(len, batch["input_ids"]))
+        self._pad_batch(batch, max_len) #  dictionaries in Python are mutable and passed by reference
 
-        return torch.tensor(batch_token_ids), torch.tensor(batch_attentions), torch.tensor(batch_masks).to(torch.bool)
+        return {
+            "input_ids": torch.stack(batch["input_ids"]),
+            "attention_mask": torch.stack(batch["attention_mask"]),
+            "images": batch["images"],
+            "labels": torch.stack(batch["labels"]),
+        }
+
+    def _discard_samples_that_are_too_long(self, batch, max_length):
+        filtered = [
+            (ids, label, attn, img)
+            for ids, label, attn, img in zip(batch["input_ids"], batch["labels"], batch["attention_mask"], batch["images"])
+            if len(ids) <= max_length
+        ]
+        if not filtered:
+            return [], [], [], []
+        batch_token_ids, batch_labels, batch_attentions, batch_images = zip(*filtered)
+        return {"input_ids": list(batch_token_ids), "labels": list(batch_labels), "attention_mask": list(batch_attentions), "images": list(batch_images)}
+
 
 class VQACollator(BaseCollator):  # Visual Question Answering Collator
     def __init__(self, tokenizer, max_length):
         self.max_length = max_length
         super().__init__(tokenizer)
 
+    def _pad_batch(self, batch, max_length):  # Reimplementing to use -100 as the pad value for labels, so that it's ignored by the loss
+        batch["input_ids"] = [torch.nn.functional.pad(ids, (max_length - len(ids), 0), value=self.tokenizer.pad_token_id) for ids in batch["input_ids"]]
+        batch["labels"]    = [torch.nn.functional.pad(labels, (max_length - len(labels), 0), value=-100) for labels in batch["labels"]]
+        batch["attention_mask"] = [torch.nn.functional.pad(attention_mask, (max_length - len(attention_mask), 0), value=0) for attention_mask in batch["attention_mask"]]
+
     def __call__(self, batch):
-        images = [item["images"] for item in batch]
-        messages_batched = [item["text_data"] for item in batch]
-
-        # Stack images
-        imgs = [img for sublist in images for img in sublist]
-        images = torch.stack(imgs)
-
-        # Create inputs by concatenating special image tokens, question, and answer
-        batch_input_ids, batch_attention_mask, loss_masks = self.prepare_inputs_and_loss_mask(messages_batched, max_length=self.max_length)
-
-        # Create labels where only answer tokens are predicted
-        labels = batch_input_ids.clone().masked_fill(~loss_masks, -100)
-        labels[:, :-1] = labels[:, 1:] # Shift labels for causal LM
-        labels[:, -1] = -100 # Last token has no target
-
-        return {
-            "image": images,
-            "input_ids": batch_input_ids,
-            "attention_mask": batch_attention_mask,
-            "labels": labels,
-        }
+        batch = self.prepare_batch(batch, max_length=self.max_length)
+        return batch
 
 class MMStarCollator(BaseCollator):  # https://huggingface.co/datasets/Lin-Chen/MMStar
-    def __init__(self, tokenizer):
-        super().__init__(tokenizer)
-    
     def __call__(self, batch):
-        images = [item["image"] for item in batch]
-        messages_batched = [item["text_data"] for item in batch]
-
-        # Stack images
-        images = torch.stack(images)
-        # Create inputs by concatenating special image tokens, question, and answer
-        batch_input_ids, batch_attention_mask, loss_masks = self.prepare_inputs_and_loss_mask(messages_batched)
-
-        input_ids = batch_input_ids.masked_fill(loss_masks, self.tokenizer.pad_token_id)
-        attention_mask = batch_attention_mask.masked_fill(loss_masks, 0)
-        labels = batch_input_ids.clone().masked_fill(~loss_masks, self.tokenizer.pad_token_id)
-
-        return {
-            "images": images,
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
+        batch = self.prepare_batch(batch)
+        return batch

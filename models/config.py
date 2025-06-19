@@ -27,7 +27,7 @@ class VLMConfig:
     lm_dropout: float = 0.0
     lm_n_blocks: int = 30
     lm_attn_scaling: float = 1.0
-    lm_max_length: int = 512
+    lm_max_length: int = 1024
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
     lm_model_type: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
@@ -50,7 +50,7 @@ class TrainConfig:
     lr_backbones: float = 5e-5
     data_cutoff_idx: int = None
     val_ratio: float = 0.025
-    batch_size: int = 32
+    batch_size: int = 16
     gradient_accumulation_steps: int = 4
     mmstar_batch_size: int = 32
     max_grad_norm: float = 1.0

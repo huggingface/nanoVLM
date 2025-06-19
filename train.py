@@ -20,11 +20,13 @@ if torch.cuda.is_available():
 
 from data.collators import VQACollator, MMStarCollator
 from data.datasets import MMStarDataset, VQADataset
+from data.advanced_datasets import ConstantLengthDataset
 from data.processors import get_image_processor, get_tokenizer
 from models.vision_language_model import VisionLanguageModel
 import models.config as config
 import models.utils as utils
 from evaluation import evaluate
+from data.data_utils import synchronized_dataloader_step
 
 #Otherwise, the tokenizer will throw a warning
 import os
@@ -89,6 +91,9 @@ def get_dataloaders(train_cfg, vlm_cfg):
     
     test_ds = load_dataset(train_cfg.test_dataset_path)
     train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatenated datasets
+    
+    if is_dist():  # We need to shard the dataset in DDP since we are using an iterable dataset instead of the distributed sampler
+        train_ds = train_ds.shard(num_shards=get_world_size(), index=get_rank())
 
     # Apply cutoff if specified
     if train_cfg.data_cutoff_idx is None:
@@ -100,7 +105,10 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_size = total_samples - val_size
 
     train_dataset = VQADataset(train_ds.select(range(train_size)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
+    
+    train_dataset = ConstantLengthDataset(train_dataset, infinite=False, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*4, queue_size=train_cfg.batch_size*4*2)
     val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
+    val_dataset = ConstantLengthDataset(val_dataset, infinite=False, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*4, queue_size=train_cfg.batch_size*4*2)
     test_dataset = MMStarDataset(test_ds['val'], tokenizer, image_processor, vlm_cfg.mp_image_token_length)
 
     # Create collators
@@ -111,16 +119,10 @@ def get_dataloaders(train_cfg, vlm_cfg):
     g.manual_seed(0)
 
     # Create dataloaders
-    train_sampler = DistributedSampler(
-        train_dataset, 
-        rank=get_rank(),
-        num_replicas=get_world_size(),
-    )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
-        sampler=train_sampler,
         collate_fn=vqa_collator,
         num_workers=8,
         pin_memory=True,
@@ -129,17 +131,9 @@ def get_dataloaders(train_cfg, vlm_cfg):
         generator=g,
     )
 
-    val_sampler = DistributedSampler(
-        val_dataset,
-        rank=get_rank(),
-        num_replicas=get_world_size(),
-        shuffle=False  # Usually False for validation
-    )
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_cfg.batch_size,
-        sampler=val_sampler,
         collate_fn=vqa_collator,
         num_workers=8,
         pin_memory=True,
@@ -165,13 +159,13 @@ def test_mmstar(model, tokenizer, test_loader, device):
     correct_predictions = 0
     with torch.no_grad():
         for batch in test_loader:
-            image = batch['images'].to(device)
+            images = batch['images']
             input_ids = batch['input_ids'].to(device)
             labels = batch['labels'].to(device)
             attention_mask = batch['attention_mask'].to(device)
 
             correct_answer = tokenizer.batch_decode(labels, skip_special_tokens=True)
-            gen = model.generate(input_ids, image, attention_mask, greedy=True, max_new_tokens=10)
+            gen = model.generate(input_ids, images, attention_mask, greedy=True, max_new_tokens=10)
             model_output = tokenizer.batch_decode(gen, skip_special_tokens=True)
             
             is_correct = utils.check_multiple_choice_with_regex(model_output, correct_answer)
@@ -205,7 +199,8 @@ def train(train_cfg, vlm_cfg):
 
     run_name = get_run_name(train_cfg, vlm_cfg)
     total_dataset_size = len(train_loader.dataset)
-    if train_cfg.data_cutoff_idx is None:
+    if train_cfg.log_wandb and is_master():
+        if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
     if train_cfg.log_wandb and is_master():
         run = wandb.init(
@@ -268,14 +263,16 @@ def train(train_cfg, vlm_cfg):
         total_train_loss = 0
         total_tokens_processed = 0
         optimizer.zero_grad()
+        data_load_start = time.time()
 
-        for i, batch in enumerate(train_loader):
+        for i, batch in enumerate(synchronized_dataloader_step(train_loader, is_dist())):
             is_update_step = (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader)
             batch_start_time = time.time()
-            images = batch["image"].to(device)
+            images = batch["images"]
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            data_load_time = time.time() - data_load_start
 
             # When using DDP with gradient accumulation,
             # skip gradient synchronization on intermediate steps to save time.
@@ -287,12 +284,12 @@ def train(train_cfg, vlm_cfg):
             else:
                 context = contextlib.nullcontext()
 
+            fw_bw_start = time.time()
             autocast_context = torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16 if device.type in ['cuda', 'cpu'] else torch.float16
             )
             with autocast_context:
-
                 with context:
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
@@ -301,6 +298,8 @@ def train(train_cfg, vlm_cfg):
 
             loss.backward()
 
+            fw_bw_time = time.time() - fw_bw_start
+            post_process_start = time.time()
             if is_update_step:
                 if train_cfg.max_grad_norm is not None:
                     grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
@@ -319,6 +318,7 @@ def train(train_cfg, vlm_cfg):
 
             num_tokens = torch.sum(attention_mask).item() # Sum of attention mask gives number of tokens
             total_tokens_processed += num_tokens
+            post_process_time = time.time() - post_process_start
 
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
@@ -336,7 +336,7 @@ def train(train_cfg, vlm_cfg):
                     save = False
                     total_val_loss = 0
                     for batch in val_loader:
-                        images = batch["image"].to(device)
+                        images = batch["images"]
                         input_ids = batch["input_ids"].to(device)
                         labels = batch["labels"].to(device)
                         attention_mask = batch["attention_mask"].to(device)
@@ -381,21 +381,25 @@ def train(train_cfg, vlm_cfg):
                         
                         if train_cfg.log_wandb and is_master():    
                             run.log({"accuracy": epoch_accuracy, **lmms_results}, step=global_step)
-                        print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
+                        print(f"Step: {global_step}, Val Loss: {avg_val_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
                     elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
-                        print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
+                        print(f"Step: {global_step}, Val Loss: {avg_val_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
 
-                model.train()          
+                model.train()
 
             if train_cfg.log_wandb and is_master():
                 run.log({
                     "batch_loss": batch_loss,
                     "tokens_per_second": tokens_per_second,
+                    "data_load_time": data_load_time,
+                    "fw_bw_time": fw_bw_time,
+                    "post_process_time": post_process_time,
                     **({"grad_norm": grad_norm} if train_cfg.max_grad_norm is not None and is_update_step else {})
                 }, step=global_step)
                 
             if is_update_step:
                 global_step += 1
+            data_load_start = time.time()
 
         avg_train_loss = total_train_loss / len(train_loader)
         # gather average batch loss from all ranks if DDP
@@ -446,6 +450,7 @@ def main():
     parser.add_argument('--compile', type=bool, help='Use torch.compile to optimize the model')
     parser.add_argument('--log_wandb', type=bool, help='Log to wandb')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
+    parser.add_argument('--no_log_wandb', action='store_true', help='Do not log to wandb')
 
     args = parser.parse_args()
 
@@ -460,8 +465,8 @@ def main():
         vlm_cfg.vlm_checkpoint_path = args.vlm_checkpoint_path
     if args.compile is not None:
         train_cfg.compile = args.compile
-    if args.log_wandb is not None:
-        train_cfg.log_wandb = args.log_wandb
+    if args.no_log_wandb is True:
+        train_cfg.log_wandb = False
 
     if args.resume_from_vlm_checkpoint and args.vlm_checkpoint_path is not None:
         train_cfg.resume_from_vlm_checkpoint = True
