@@ -156,7 +156,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
         pin_memory=True,
         worker_init_fn=seed_worker,
         generator=g,
-        )
+    )
 
     return train_loader, val_loader, test_loader
 
