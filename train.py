@@ -206,7 +206,7 @@ def train(train_cfg, vlm_cfg):
     run_name = get_run_name(train_cfg, vlm_cfg)
     total_dataset_size = len(train_loader.dataset)
     if train_cfg.data_cutoff_idx is None:
-            run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
+        run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
     if train_cfg.log_wandb and is_master():
         run = wandb.init(
             entity=train_cfg.wandb_entity,
@@ -268,6 +268,7 @@ def train(train_cfg, vlm_cfg):
         total_train_loss = 0
         total_tokens_processed = 0
         optimizer.zero_grad()
+        train_loader.sampler.set_epoch(epoch)
 
         for i, batch in enumerate(train_loader):
             is_update_step = (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader)
