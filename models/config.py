@@ -27,7 +27,7 @@ class VLMConfig:
     lm_dropout: float = 0.0
     lm_n_blocks: int = 30
     lm_attn_scaling: float = 1.0
-    lm_max_length: int = 512
+    lm_max_length: int = 1024
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
     lm_model_type: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
@@ -50,13 +50,17 @@ class TrainConfig:
     lr_backbones: float = 5e-5
     data_cutoff_idx: int = None
     val_ratio: float = 0.025
-    batch_size: int = 32
+    batch_size: int = 16
     gradient_accumulation_steps: int = 4
     mmstar_batch_size: int = 32
     max_grad_norm: float = 1.0
     eval_in_epochs: bool = True
-    eval_interval: int = 250
-    epochs: int = 5
+    eval_interval: int = gradient_accumulation_steps * 100
+    stats_log_interval: int = gradient_accumulation_steps * 25
+    max_training_steps: int = 5000
+    max_images_per_example: int = 4
+    max_images_per_knapsack: int = 18
+    max_sample_length: int = 1024
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
     train_dataset_path: str = 'HuggingFaceM4/the_cauldron'
@@ -67,4 +71,4 @@ class TrainConfig:
     use_lmms_eval: bool = True # Use lmms-eval for evaluation
     lmms_eval_tasks: str = 'mmstar,mmmu,ocrbench,textvqa' # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')
     lmms_eval_limit: int = None
-    lmms_eval_batch_size: int = 32
+    lmms_eval_batch_size: int = 128

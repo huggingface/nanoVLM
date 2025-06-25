@@ -110,7 +110,7 @@ def parse_eval_args() -> argparse.Namespace:
         "--batch_size",
         "-b",
         type=str,
-        default=32,
+        default=128,
         metavar="auto|auto:N|N",
         help="Acceptable values are 'auto', 'auto:N' or N, where N is an integer. Default 1.",
     )
@@ -281,7 +281,7 @@ def evaluate(
     tasks: str = None,
     model_args: str = "",
     num_fewshot: int = None,
-    batch_size: str = "32",
+    batch_size: str = "128",
     max_batch_size: int = None,
     device: str = "cuda",
     output_path: str = "results/",

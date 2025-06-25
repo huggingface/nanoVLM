@@ -87,11 +87,9 @@ To try a [trained model](https://huggingface.co/lusxvr/nanoVLM-450M), you can si
 ```bash
 python generate.py
 ```
-or, to use distributed data parallel with 8 gpus, you can simply run:
+or, to use your own trained model, you can simply run:
 ```bash
-python train.py
-OR
-torchrun --nproc_per_node=8 train.py
+python generate.py --checkpoint /your/path/to/trained_models
 ```
 
 If we feed the example image in `assets/image.png` with a question into the model, we get the following output. Even after only short training, the model can recognize the cat in the picture. 

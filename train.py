@@ -10,7 +10,7 @@ import torch.optim as optim
 from statistics import mean
 from dataclasses import asdict
 from datasets import load_dataset, concatenate_datasets
-from torch.utils.data import DataLoader, RandomSampler, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
@@ -18,13 +18,15 @@ torch.manual_seed(0)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(0)
 
-from data.collators import VQACollator, MMStarCollator
-from data.datasets import MMStarDataset, VQADataset
+from data.collators import VQACollator
+from data.datasets import VQADataset
+from data.advanced_datasets import ConstantLengthDataset
 from data.processors import get_image_processor, get_tokenizer
 from models.vision_language_model import VisionLanguageModel
 import models.config as config
 import models.utils as utils
 from evaluation import evaluate
+from data.data_utils import synchronized_dataloader_step
 
 #Otherwise, the tokenizer will throw a warning
 import os
@@ -65,7 +67,7 @@ def wrap_model(model):
 def get_run_name(train_cfg, vlm_cfg):
     dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
     batch_size = f"bs{int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}"
-    epochs = f"ep{train_cfg.epochs}"
+    max_training_steps = f"{train_cfg.max_training_steps}"
     learning_rate = f"lr{train_cfg.lr_backbones}-{train_cfg.lr_mp}"
     num_gpus = f"{get_world_size()}xGPU"
     date = time.strftime("%m%d-%H%M%S")
@@ -73,7 +75,7 @@ def get_run_name(train_cfg, vlm_cfg):
     mp = f"mp{vlm_cfg.mp_pixel_shuffle_factor}"
     llm = f"{vlm_cfg.lm_model_type.split('/')[-1]}"
 
-    return f"nanoVLM_{vit}_{mp}_{llm}_{num_gpus}_{dataset_size}_{batch_size}_{epochs}_{learning_rate}_{date}"
+    return f"nanoVLM_{vit}_{mp}_{llm}_{num_gpus}_{dataset_size}_{batch_size}_{max_training_steps}_{learning_rate}_{date}"
 
 def get_dataloaders(train_cfg, vlm_cfg):
     # Create datasets
@@ -89,6 +91,9 @@ def get_dataloaders(train_cfg, vlm_cfg):
     
     test_ds = load_dataset(train_cfg.test_dataset_path)
     train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatenated datasets
+    
+    if is_dist():  # We need to shard the dataset in DDP since we are using an iterable dataset instead of the distributed sampler
+        train_ds = train_ds.shard(num_shards=get_world_size(), index=get_rank())
 
     # Apply cutoff if specified
     if train_cfg.data_cutoff_idx is None:
@@ -100,27 +105,22 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_size = total_samples - val_size
 
     train_dataset = VQADataset(train_ds.select(range(train_size)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
+    
+    train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*64, queue_size=train_cfg.batch_size*64*2,
+                                          max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
     val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
-    test_dataset = MMStarDataset(test_ds['val'], tokenizer, image_processor, vlm_cfg.mp_image_token_length)
 
     # Create collators
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)
-    mmstar_collator = MMStarCollator(tokenizer)
 
     g = torch.Generator()
     g.manual_seed(0)
 
     # Create dataloaders
-    train_sampler = DistributedSampler(
-        train_dataset, 
-        rank=get_rank(),
-        num_replicas=get_world_size(),
-    )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
-        sampler=train_sampler,
         collate_fn=vqa_collator,
         num_workers=8,
         pin_memory=True,
@@ -148,39 +148,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
         generator=g,
     )
 
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=train_cfg.mmstar_batch_size, 
-        shuffle=False, 
-        collate_fn=mmstar_collator,
-        pin_memory=True,
-        worker_init_fn=seed_worker,
-        generator=g,
-        )
-
-    return train_loader, val_loader, test_loader
-
-def test_mmstar(model, tokenizer, test_loader, device):
-    total_examples = 0
-    correct_predictions = 0
-    with torch.no_grad():
-        for batch in test_loader:
-            image = batch['images'].to(device)
-            input_ids = batch['input_ids'].to(device)
-            labels = batch['labels'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-
-            correct_answer = tokenizer.batch_decode(labels, skip_special_tokens=True)
-            gen = model.generate(input_ids, image, attention_mask, greedy=True, max_new_tokens=10)
-            model_output = tokenizer.batch_decode(gen, skip_special_tokens=True)
-            
-            is_correct = utils.check_multiple_choice_with_regex(model_output, correct_answer)
-            
-            total_examples += len(is_correct)
-            if is_correct:
-                correct_predictions += sum(is_correct)
-    accuracy = correct_predictions / total_examples if total_examples > 0 else 0
-    return accuracy
+    return train_loader, val_loader
 
 # Cosine learning rate schedule with warmup (from Karpathy)
 # https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L353
@@ -200,12 +168,13 @@ def get_lr(it, max_lr, max_steps):
     return min_lr + coeff * (max_lr - min_lr)
 
 def train(train_cfg, vlm_cfg):
-    train_loader, val_loader, test_loader = get_dataloaders(train_cfg, vlm_cfg)
+    train_loader, val_loader = get_dataloaders(train_cfg, vlm_cfg)
     tokenizer = get_tokenizer(vlm_cfg.lm_tokenizer, vlm_cfg.vlm_extra_tokens, vlm_cfg.lm_chat_template)
 
     run_name = get_run_name(train_cfg, vlm_cfg)
     total_dataset_size = len(train_loader.dataset)
-    if train_cfg.data_cutoff_idx is None:
+    if train_cfg.log_wandb and is_master():
+        if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
     if train_cfg.log_wandb and is_master():
         run = wandb.init(
@@ -262,20 +231,34 @@ def train(train_cfg, vlm_cfg):
     best_accuracy = 0
     best_val_loss = float('inf')
     global_step = 0
-    for epoch in range(train_cfg.epochs):
+    epoch = 0
+    
+    # Training stats accumulators
+    accumulated_stats = {
+        'tokens_per_second': [],
+        'data_load_time': [],
+        'fw_bw_time': [],
+        'post_process_time': [],
+        'images_per_sample': [],
+    }
+    
+    while global_step < train_cfg.max_training_steps:
+        epoch += 1
         epoch_start_time = time.time()
         model.train()
         total_train_loss = 0
         total_tokens_processed = 0
         optimizer.zero_grad()
+        data_load_start = time.time()
 
-        for i, batch in enumerate(train_loader):
+        for i, batch in enumerate(synchronized_dataloader_step(train_loader, is_dist())):
             is_update_step = (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader)
             batch_start_time = time.time()
-            images = batch["image"].to(device)
+            images = batch["images"]
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            data_load_time = time.time() - data_load_start
 
             # When using DDP with gradient accumulation,
             # skip gradient synchronization on intermediate steps to save time.
@@ -287,12 +270,12 @@ def train(train_cfg, vlm_cfg):
             else:
                 context = contextlib.nullcontext()
 
+            fw_bw_start = time.time()
             autocast_context = torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16 if device.type in ['cuda', 'cpu'] else torch.float16
             )
             with autocast_context:
-
                 with context:
                     _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
 
@@ -301,12 +284,14 @@ def train(train_cfg, vlm_cfg):
 
             loss.backward()
 
+            fw_bw_time = time.time() - fw_bw_start
+            post_process_start = time.time()
             if is_update_step:
                 if train_cfg.max_grad_norm is not None:
                     grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
 
-                adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, len(train_loader) * train_cfg.epochs // train_cfg.gradient_accumulation_steps)
-                adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, len(train_loader) * train_cfg.epochs // train_cfg.gradient_accumulation_steps)
+                adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, train_cfg.max_training_steps)
+                adj_lr_backbones = get_lr(global_step, train_cfg.lr_backbones, train_cfg.max_training_steps)
                 optimizer.param_groups[0]['lr'] = adj_lr_mp
                 optimizer.param_groups[1]['lr'] = adj_lr_backbones
                 optimizer.step()
@@ -319,24 +304,29 @@ def train(train_cfg, vlm_cfg):
 
             num_tokens = torch.sum(attention_mask).item() # Sum of attention mask gives number of tokens
             total_tokens_processed += num_tokens
+            post_process_time = time.time() - post_process_start
+
+            images_per_sample = [len(image_pack) for image_pack in images]
 
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
-            tokens_per_second = num_tokens / batch_duration 
+            tokens_per_second = get_world_size() * num_tokens / batch_duration  # Multiply by world size to get global tokens/s
 
-            # gather loss and t/s from all ranks if DDP
-            batch_loss = mean(dist_gather(batch_loss)) if is_dist() else batch_loss  
-            tokens_per_second = sum(dist_gather(tokens_per_second)) if is_dist() else tokens_per_second  
-
+            # Accumulate training stats
+            accumulated_stats['tokens_per_second'].append(tokens_per_second)
+            accumulated_stats['data_load_time'].append(data_load_time)
+            accumulated_stats['fw_bw_time'].append(fw_bw_time)
+            accumulated_stats['post_process_time'].append(post_process_time)
+            accumulated_stats['images_per_sample'].extend(images_per_sample)
+            
             if train_cfg.eval_in_epochs and global_step % train_cfg.eval_interval == 0 and is_update_step:
                 model.eval()
                 if device == "cuda":
                     torch.cuda.empty_cache()
                 with torch.no_grad():
-                    save = False
                     total_val_loss = 0
                     for batch in val_loader:
-                        images = batch["image"].to(device)
+                        images = batch["images"]
                         input_ids = batch["input_ids"].to(device)
                         labels = batch["labels"].to(device)
                         attention_mask = batch["attention_mask"].to(device)
@@ -349,12 +339,12 @@ def train(train_cfg, vlm_cfg):
                     avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
                     if avg_val_loss < best_val_loss:
                         best_val_loss = avg_val_loss
-                        save = True
-                    if train_cfg.log_wandb and is_master():
-                        run.log({"val_loss": avg_val_loss}, step=global_step)
+                        if is_master():
+                            save_model = model.module if is_dist() else model  # unwrap the model for saving if DDP
+                            save_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
 
                     lmms_results = {}
-                    if train_cfg.use_lmms_eval and global_step % (train_cfg.eval_interval*2) == 0:
+                    if train_cfg.use_lmms_eval:
                         eval_results = evaluate(
                             model=model.module if is_dist() else model,
                             tasks=train_cfg.lmms_eval_tasks,
@@ -368,34 +358,72 @@ def train(train_cfg, vlm_cfg):
                             for task_name, task_results in eval_results[0]["results"].items():
                                 for metric_name, metric_value in task_results.items():
                                     if isinstance(metric_value, (int, float)):
-                                        lmms_results[f"lmms_{task_name}_{metric_name.split(',')[0]}"] = metric_value
-                        
-                    if is_master() and global_step % (train_cfg.eval_interval*2) == 0:
-                        eval_model = model.module if is_dist() else model  # unwrap the model for eval if DDP
-                        epoch_accuracy = test_mmstar(eval_model, tokenizer, test_loader, device)
-                        if epoch_accuracy > best_accuracy:
-                            best_accuracy = epoch_accuracy
-                            save = True
-                        if save:
-                            eval_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
-                        
-                        if train_cfg.log_wandb and is_master():    
-                            run.log({"accuracy": epoch_accuracy, **lmms_results}, step=global_step)
-                        print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}, Accuracy: {epoch_accuracy:.4f}")
-                    elif is_master() and not global_step % (train_cfg.eval_interval*4) == 0:
-                        print(f"Step: {global_step}, Loss: {batch_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
+                                        lmms_results[f"{task_name}_{metric_name.split(',')[0]}"] = metric_value
+                    
+                    if is_master():
+                        print(f"Step: {global_step}, Val Loss: {avg_val_loss:.4f}, Tokens/s: {tokens_per_second:.2f}")
+                        if train_cfg.log_wandb:
+                            run.log({"val_loss": avg_val_loss, **{f"lmms_eval/{key}": value for key, value in lmms_results.items()}}, step=global_step)
 
-                model.train()          
+                model.train()
 
-            if train_cfg.log_wandb and is_master():
-                run.log({
-                    "batch_loss": batch_loss,
-                    "tokens_per_second": tokens_per_second,
-                    **({"grad_norm": grad_norm} if train_cfg.max_grad_norm is not None and is_update_step else {})
-                }, step=global_step)
+            # Log training stats every N steps (ALL RANKS must participate in collective ops)
+            if global_step % train_cfg.stats_log_interval == 0 and len(accumulated_stats['tokens_per_second']) > 0 and is_update_step:
+                # ALL RANKS: Perform collective operations for training stats
+                stats = {}
+                for key in ['tokens_per_second', 'data_load_time', 'fw_bw_time', 'post_process_time', 'images_per_sample']:
+                    if is_dist():
+                        all_values = dist_gather(accumulated_stats[key])
+                        all_values_flat = [item for sublist in all_values for item in sublist]  # Flatten list of lists
+                        stats[f'avg_{key}'] = mean(all_values_flat)
+                    else:
+                        stats[f'avg_{key}'] = mean(accumulated_stats[key])
+                
+                for key in ['data_load_time', 'fw_bw_time', 'post_process_time', 'images_per_sample']:
+                    if is_dist():
+                        all_values = dist_gather(accumulated_stats[key])
+                        all_values_flat = [item for sublist in all_values for item in sublist]
+                        stats[f'max_{key}'] = max(all_values_flat)
+                    else:
+                        stats[f'max_{key}'] = max(accumulated_stats[key])
+
+                if is_dist():
+                    all_images_values = dist_gather(accumulated_stats['images_per_sample'])
+                    all_images_flat = [item for sublist in all_images_values for item in sublist]
+                    stats['min_images_per_sample'] = min(all_images_flat)
+                else:
+                    stats['min_images_per_sample'] = min(accumulated_stats['images_per_sample'])
+                
+                # MASTER ONLY: Log to wandb
+                if train_cfg.log_wandb and is_master():
+                    run.log({
+                        **{f"training_stats/{key}": value for key, value in stats.items()},
+                    }, step=global_step)
+                
+                # ALL RANKS: Reset accumulators
+                for key in accumulated_stats:
+                    accumulated_stats[key] = []
+
+            # Log batch loss  
+            if is_update_step:
+                # ALL RANKS: gather loss from all ranks if DDP
+                if is_dist():
+                    batch_loss_gathered = mean(dist_gather(batch_loss))
+                else:
+                    batch_loss_gathered = batch_loss
+                    
+                # MASTER ONLY: Log to wandb
+                if train_cfg.log_wandb and is_master():
+                    run.log({
+                        "batch_loss": batch_loss_gathered,
+                        **({"grad_norm": grad_norm} if train_cfg.max_grad_norm is not None else {})
+                    }, step=global_step)
                 
             if is_update_step:
                 global_step += 1
+                if global_step >= train_cfg.max_training_steps:
+                    break
+            data_load_start = time.time()
 
         avg_train_loss = total_train_loss / len(train_loader)
         # gather average batch loss from all ranks if DDP
@@ -415,13 +443,14 @@ def train(train_cfg, vlm_cfg):
                          "epoch_duration": epoch_duration,
                          "epoch_tokens_per_second": epoch_tokens_per_second})
 
-            print(f"Epoch {epoch+1}/{train_cfg.epochs}, Train Loss: {avg_train_loss:.4f} | Time: {epoch_duration:.2f}s | T/s: {epoch_tokens_per_second:.2f}")
+            print(f"Epoch: {epoch}, Step: {global_step}/{train_cfg.max_training_steps}, Train Loss: {avg_train_loss:.4f} | Time: {epoch_duration:.2f}s | T/s: {epoch_tokens_per_second:.2f}")
 
     # Summary Statistics
     if is_master():
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         total_training_time = sum(epoch_times)
-        total_samples_processed = len(train_loader.dataset) * train_cfg.epochs
+        batch_size = int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)
+        total_samples_processed = batch_size * global_step
         avg_time_per_sample = total_training_time / total_samples_processed
         print(f"Average time per epoch: {avg_epoch_time:.2f}s")
         print(f"Average time per sample: {avg_time_per_sample:.4f}s")
@@ -446,6 +475,7 @@ def main():
     parser.add_argument('--compile', type=bool, help='Use torch.compile to optimize the model')
     parser.add_argument('--log_wandb', type=bool, help='Log to wandb')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
+    parser.add_argument('--no_log_wandb', action='store_true', help='Do not log to wandb')
 
     args = parser.parse_args()
 
@@ -460,8 +490,8 @@ def main():
         vlm_cfg.vlm_checkpoint_path = args.vlm_checkpoint_path
     if args.compile is not None:
         train_cfg.compile = args.compile
-    if args.log_wandb is not None:
-        train_cfg.log_wandb = args.log_wandb
+    if args.no_log_wandb is True:
+        train_cfg.log_wandb = False
 
     if args.resume_from_vlm_checkpoint and args.vlm_checkpoint_path is not None:
         train_cfg.resume_from_vlm_checkpoint = True
