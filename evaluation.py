@@ -487,6 +487,16 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
         batch_size=int(args.batch_size),
     )
 
+    # Set seeds for reproducibility
+    if args.seed[0] is not None:
+        random.seed(args.seed[0])
+    if args.seed[1] is not None:
+        np.random.seed(args.seed[1])
+    if args.seed[2] is not None:
+        torch.manual_seed(args.seed[2])
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed[2])
+
     results = evaluator.simple_evaluate(
         model=wrapped_model,
         model_args=args.model_args,

@@ -15,6 +15,8 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 torch.manual_seed(0)
+numpy.random.seed(0)
+random.seed(0)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(0)
 
@@ -177,15 +179,17 @@ def train(train_cfg, vlm_cfg):
         if train_cfg.data_cutoff_idx is None:
             run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
     if train_cfg.log_wandb and is_master():
-        run = wandb.init(
-            entity=train_cfg.wandb_entity,
-            project="nanoVLM",
-            config={
+        wandb_init_args = {
+            "project": "nanoVLM",
+            "config": {
                 "VLMConfig": asdict(vlm_cfg),
                 "TrainConfig": asdict(train_cfg)
             },
-            name=run_name,
-        )
+            "name": run_name,
+        }
+        if train_cfg.wandb_entity is not None:
+            wandb_init_args["entity"] = train_cfg.wandb_entity
+        run = wandb.init(**wandb_init_args)
 
     # Initialize model
     if train_cfg.resume_from_vlm_checkpoint:
@@ -342,6 +346,12 @@ def train(train_cfg, vlm_cfg):
                         if is_master():
                             save_model = model.module if is_dist() else model  # unwrap the model for saving if DDP
                             save_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
+
+        # Push the best model to the hub (Please set your user name in the config!)
+        if vlm_cfg.hf_repo_name is not None:
+            print("Training complete. Pushing model to Hugging Face Hub...")
+            hf_model = VisionLanguageModel.from_pretrained(os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
+            hf_model.push_to_hub(vlm_cfg.hf_repo_name)
 
                     lmms_results = {}
                     if train_cfg.use_lmms_eval:
