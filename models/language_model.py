@@ -235,21 +235,26 @@ class LanguageModelGroupedQueryAttention(nn.Module):
         # Apply rotary embeddings to the current q and k
         q, k_rotated = apply_rotary_pos_embd(q_curr, k_curr, cos, sin)
 
-        # Check if we can use cached keys and values
-        if not is_prefill and block_kv_cache['key'] is not None:
-            # Concatenate with cached K, V
-            # k_rotated and v_curr are for the new token(s)
-            k = block_kv_cache['key']
-            v = block_kv_cache['value']
-            k = torch.cat([k, k_rotated], dim=2)
-            v = torch.cat([v, v_curr], dim=2)
-            block_kv_cache['key'] = k
-            block_kv_cache['value'] = v
+        # update KV cache only during validation and inference
+        if not self.training:
+            # Check if we can use cached keys and values
+            if not is_prefill and block_kv_cache['key'] is not None:
+                # Concatenate with cached K, V
+                # k_rotated and v_curr are for the new token(s)
+                k = block_kv_cache['key']
+                v = block_kv_cache['value']
+                k = torch.cat([k, k_rotated], dim=2)
+                v = torch.cat([v, v_curr], dim=2)
+                block_kv_cache['key'] = k
+                block_kv_cache['value'] = v
+            else:
+                # No cache, this is the first pass (prefill)
+                k = k_rotated
+                v = v_curr
+                block_kv_cache = {'key': k, 'value': v}
         else:
-            # No cache, this is the first pass (prefill)
             k = k_rotated
             v = v_curr
-            block_kv_cache = {'key': k, 'value': v}
 
         # Repeat K, V for Grouped Query Attention
         k_exp = k.repeat_interleave(self.n_kv_groups, dim=1) # (B, n_heads, T_kv, head_dim)
