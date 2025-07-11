@@ -38,7 +38,7 @@ class BaseDataset(Dataset):
             if isinstance(image, Image.Image):
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
-                processed_image = self.image_processor(image)
+                processed_image = self.image_processor(image, return_tensors="np", input_data_format="channels_last",)
                 processed_images.append(processed_image)
             else:
                 raise ValueError("Error processing image")

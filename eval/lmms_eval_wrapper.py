@@ -69,12 +69,11 @@ class NanoVLMWrapper(lmms):
                 raise ValueError(f"Unsupported visual type: {type(visual)}. Expected PIL Image, path string, or numpy array.")
             
             # Process image
-            processed = self.image_processor(image)
+            processed = self.image_processor(image, return_tensors="np", input_data_format="channels_last",)
             images.append(processed)
         
         if images:
-            return torch.stack(images).to(self.device)
-        return None
+            return images
         
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         raise NotImplementedError("Loglikelihood is not implemented for nanoVLM")
@@ -143,7 +142,7 @@ class NanoVLMWrapper(lmms):
 
             input_ids = inputs["input_ids"].to(self.device)
             attention_mask = inputs["attention_mask"].to(self.device)
-            images = images.to(self.device)
+            # images = images.to(self.device)
 
             # Extract generation parameters for the batch
             # We use the gen_kwargs from the first item in the chunk, assuming they are uniform for the batch.

@@ -6,13 +6,13 @@ class VLMConfig:
     vit_hidden_dim: int = 768
     vit_inter_dim: int = 4 * vit_hidden_dim
     vit_patch_size: int = 16
-    vit_img_size: int = 256
+    vit_img_size: int = 512
     vit_n_heads: int = 12
     vit_dropout: float = 0.0
     vit_n_blocks: int = 12
     vit_ln_eps: float = 1e-6
     vit_cls_flag: bool = False
-    vit_model_type: str = 'google/siglip2-base-patch16-256'
+    vit_model_type: str = 'google/siglip2-base-patch16-naflex'
 
     lm_hidden_dim: int = 576
     lm_inter_dim: int = 1536
@@ -34,7 +34,7 @@ class VLMConfig:
     lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
     lm_chat_template: str = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
-    mp_pixel_shuffle_factor: int = 2
+    mp_pixel_shuffle_factor: int = 4
     mp_image_token_length: int = 64
 
     vlm_extra_tokens: dict[str, str] = field(default_factory=lambda: {"image_token": "<|image|>"})#, "boi_token": "<|image_start|>", "eoi_token": "<|image_end|>"})
@@ -46,28 +46,28 @@ class VLMConfig:
 @dataclass
 class TrainConfig:
     lr_mp: float = 0.00512
-    lr_backbones: float = 5e-5
+    lr_backbones: float = 0
     data_cutoff_idx: int = None
     val_ratio: float = 0.025
-    batch_size: int = 16
+    batch_size: int = 32
     gradient_accumulation_steps: int = 4
     mmstar_batch_size: int = 32
     max_grad_norm: float = 1.0
     eval_in_epochs: bool = True
     eval_interval: int = gradient_accumulation_steps * 100
     stats_log_interval: int = gradient_accumulation_steps * 25
-    max_training_steps: int = 5000
+    max_training_steps: int = 20000
     max_images_per_example: int = 4
     max_images_per_knapsack: int = 18
     max_sample_length: int = 1024
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
-    train_dataset_path: str = 'HuggingFaceM4/the_cauldron'
-    train_dataset_name: tuple[str, ...] = ("ai2d", "aokvqa", "chart2text", "chartqa", "clevr", "cocoqa", "datikz", "diagram_image_to_text", "docvqa", "dvqa", "figureqa", "finqa", "geomverse", "hateful_memes", "hitab", "iam", "iconqa", "infographic_vqa", "intergps", "localized_narratives", "mapqa", "multihiertt", "ocrvqa", "plotqa", "raven", "rendered_text", "robut_sqa", "robut_wikisql", "robut_wtq", "scienceqa", "screen2words", "st_vqa", "tabmwp", "tallyqa", "tat_qa", "textcaps", "textvqa", "tqa", "vistext", "visual7w", "visualmrc", "vqarad", "vqav2", "vsr", "websight")
+    train_dataset_path: str = "HuggingFaceM4/cauldron_v3_test" # 'HuggingFaceM4/the_cauldron'
+    train_dataset_name: tuple[str, ...] = ("allava_laion", "allava_vflan")
     test_dataset_path: str = "Lin-Chen/MMStar"
     wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
     log_wandb: bool = True
     use_lmms_eval: bool = True # Use lmms-eval for evaluation
     lmms_eval_tasks: str = 'mmstar,mmmu,ocrbench,textvqa' # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')
-    lmms_eval_limit: int = None
+    lmms_eval_limit: int = 2000
     lmms_eval_batch_size: int = 128

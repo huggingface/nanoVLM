@@ -15,8 +15,15 @@ def get_tokenizer(name, extra_special_tokens=None, chat_template=None):
         TOKENIZERS_CACHE[name] = tokenizer
     return TOKENIZERS_CACHE[name]
 
+from transformers import Siglip2ImageProcessor
+
 def get_image_processor(img_size):
-    return transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor()
-    ])
+    return Siglip2ImageProcessor(
+        max_num_patches=1024,
+    )
+
+# def get_image_processor(img_size):
+#     return transforms.Compose([
+#         transforms.Resize((img_size, img_size)),
+#         transforms.ToTensor()
+#     ])

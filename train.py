@@ -9,7 +9,7 @@ import contextlib
 import torch.optim as optim
 from statistics import mean
 from dataclasses import asdict
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset, concatenate_datasets, get_dataset_config_names
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -65,7 +65,7 @@ def dist_gather(o):
     return o_all
 
 def wrap_model(model):
-    return DistributedDataParallel(model, device_ids=[dist.get_rank()])
+    return DistributedDataParallel(model, device_ids=[dist.get_rank()], find_unused_parameters=True)
 
 def get_run_name(train_cfg, vlm_cfg):
     dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
@@ -87,9 +87,24 @@ def get_dataloaders(train_cfg, vlm_cfg):
 
     # Load and combine all training datasets
     combined_train_data = []
-    for dataset_name in train_cfg.train_dataset_name:
-        train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name)
-        combined_train_data.append(train_ds['train'])
+    
+    dataset_names_to_load = train_cfg.train_dataset_name
+    if "all" in dataset_names_to_load:
+        dataset_names_to_load = get_dataset_config_names(train_cfg.train_dataset_path)
+
+    for dataset_name in dataset_names_to_load:
+        try:
+            train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name)
+            train_ds['train'][0] # Check if the dataset is loaded correctly
+            combined_train_data.append(train_ds['train'])
+        except Exception as e:
+            if is_master():
+                print(f"Warning: Failed to load dataset config '{dataset_name}' from '{train_cfg.train_dataset_path}'. Error: {e}")
+            continue
+
+    if not combined_train_data:
+        raise ValueError("No valid datasets were loaded. Please check your dataset path and configurations.")
+        
     train_ds = concatenate_datasets(combined_train_data)
     
     test_ds = load_dataset(train_cfg.test_dataset_path)
@@ -109,7 +124,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
 
     train_dataset = VQADataset(train_ds.select(range(train_size)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
     
-    train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*64, queue_size=train_cfg.batch_size*64*2,
+    train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*64, queue_size=train_cfg.batch_size*64,
                                           max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
     val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
 
@@ -125,7 +140,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
         collate_fn=vqa_collator,
-        num_workers=8,
+        num_workers=4,
         pin_memory=True,
         drop_last=True,
         worker_init_fn=seed_worker,

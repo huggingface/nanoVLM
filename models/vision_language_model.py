@@ -3,7 +3,7 @@ import os
 import tempfile
 from dataclasses import asdict
 from typing import Optional
-
+import numpy as np
 
 from models.utils import top_k_top_p_filtering
 from models.vision_transformer import ViT
@@ -12,7 +12,7 @@ from models.modality_projector import ModalityProjector
 from models.config import VLMConfig
 
 from data.processors import get_tokenizer
-
+from transformers import Siglip2VisionModel
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,10 +24,10 @@ class VisionLanguageModel(nn.Module):
         self.cfg = cfg
         if load_backbone:
             print("Loading from backbone weights")
-            self.vision_encoder = ViT.from_pretrained(cfg)
+            self.vision_encoder = Siglip2VisionModel.from_pretrained(cfg.vit_model_type)
             self.decoder = LanguageModel.from_pretrained(cfg)
         else:
-            self.vision_encoder = ViT(cfg)
+            self.vision_encoder = Siglip2VisionModel(cfg)
             self.decoder = LanguageModel(cfg)
         self.MP = ModalityProjector(cfg)
         self.load_backbone = load_backbone
@@ -51,8 +51,12 @@ class VisionLanguageModel(nn.Module):
     def forward(self, input_ids, images, attention_mask=None, targets=None):
         if isinstance(images, list) and isinstance(images[0], list):  # If images is a list of lists, flatten it
             images = [img for sublist in images for img in sublist]
-            images = torch.stack(images).to(input_ids.device)
-        image_embd = self.vision_encoder(images)
+            # images = torch.stack(images).to(input_ids.device)
+            # Convert lists to numpy arrays first for better performance
+        pixel_values = torch.from_numpy(np.array([img.pixel_values[0] for img in images])).to(input_ids.device)
+        pixel_attention_mask = torch.from_numpy(np.array([img.pixel_attention_mask[0] for img in images])).to(input_ids.device)
+        spatial_shapes = torch.from_numpy(np.array([img.spatial_shapes[0] for img in images])).to(input_ids.device)
+        image_embd = self.vision_encoder(pixel_values, pixel_attention_mask, spatial_shapes).last_hidden_state
         image_embd = self.MP(image_embd) # [num_images, mp_image_token_length, D_lm]
 
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
@@ -76,10 +80,13 @@ class VisionLanguageModel(nn.Module):
     def generate(self, input_ids, images, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
         if isinstance(images, list) and isinstance(images[0], list):  # If images is a list of lists, flatten it
             images = [img for sublist in images for img in sublist]
-            images = torch.stack(images).to(input_ids.device)
-
+            # images = torch.stack(images).to(input_ids.device)
         # 1. Process image
-        image_embd = self.vision_encoder(images) # [B, T_img_feat, D_model]
+        pixel_values = torch.from_numpy(np.array([img.pixel_values[0] for img in images])).to(input_ids.device)
+        pixel_attention_mask = torch.from_numpy(np.array([img.pixel_attention_mask[0] for img in images])).to(input_ids.device)
+        spatial_shapes = torch.from_numpy(np.array([img.spatial_shapes[0] for img in images])).to(input_ids.device)
+        image_embd = self.vision_encoder(pixel_values, pixel_attention_mask, spatial_shapes).last_hidden_state
+
         image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
 
         # 2. Embed initial text prompt tokens
@@ -108,6 +115,7 @@ class VisionLanguageModel(nn.Module):
 
         # Store newly generated token IDs
         newly_generated_ids_list = []
+        finished_sequences = torch.zeros(batch_size, dtype=torch.bool, device=input_ids.device)
 
         # --- Decode Phase by sampling tokens autoregressively using the kv-cache ---
         for _ in range(max_new_tokens):
@@ -119,7 +127,14 @@ class VisionLanguageModel(nn.Module):
                 next_token_id = torch.multinomial(probs, num_samples=1)
             
             newly_generated_ids_list.append(next_token_id)
-            
+
+            finished_sequences = finished_sequences | (next_token_id == self.tokenizer.eos_token_id)
+            if finished_sequences.all():
+                print("All sequences finished")
+                print(_)
+                print("Tokens saved: ", max_new_tokens - _)
+                break
+
             # Embed the newly generated token
             next_token_embed = self.decoder.token_embedding(next_token_id) # [B, 1, D_lm]
             
