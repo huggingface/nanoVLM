@@ -127,7 +127,7 @@ def measure_vram(args, vlm_cfg, train_cfg_defaults):
                 if i >= num_iterations_for_vram:
                     break
                 
-                images = batch["image"].to(device)
+                images = batch["images"]
                 input_ids = batch["input_ids"].to(device)
                 labels = batch["labels"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
