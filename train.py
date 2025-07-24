@@ -10,7 +10,7 @@ import torch.optim as optim
 from statistics import mean
 from dataclasses import asdict
 from datasets import load_dataset, concatenate_datasets, get_dataset_config_names
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
@@ -30,10 +30,6 @@ from data.data_utils import synchronized_dataloader_step
 #Otherwise, the tokenizer will throw a warning
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-# Fix for "Decompressed data too large" error with certain PNGs
-import PIL.PngImagePlugin
-PIL.PngImagePlugin.MAX_TEXT_CHUNK = 100 * 1024 * 1024
 
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
@@ -122,11 +118,13 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_size = total_samples - val_size
 
     train_dataset = VQADataset(train_ds.select(range(train_size)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
-    
     train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*64, queue_size=train_cfg.batch_size*64*2,
                                           max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
+    
     val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
-
+    val_dataset = ConstantLengthDataset(val_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*64, queue_size=train_cfg.batch_size*64*2,
+                                          max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
+    
     # Create collators
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)
 
@@ -139,26 +137,19 @@ def get_dataloaders(train_cfg, vlm_cfg):
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
         collate_fn=vqa_collator,
-        num_workers=8,
+        num_workers=2,
         pin_memory=True,
         drop_last=True,
         worker_init_fn=seed_worker,
         generator=g,
     )
 
-    val_sampler = DistributedSampler(
-        val_dataset,
-        rank=get_rank(),
-        num_replicas=get_world_size(),
-        shuffle=False  # Usually False for validation
-    )
-
     val_loader = DataLoader(
         val_dataset,
-        batch_size=train_cfg.batch_size,
-        sampler=val_sampler,
+        batch_size=train_cfg.batch_size,    # =per device BS in DDP
         collate_fn=vqa_collator,
-        num_workers=8,
+        shuffle=False,
+        num_workers=2,
         pin_memory=True,
         drop_last=True,
         worker_init_fn=seed_worker,
@@ -350,7 +341,7 @@ def train(train_cfg, vlm_cfg):
                     torch.cuda.empty_cache()
                 with torch.no_grad():
                     total_val_loss = 0
-                    for batch in val_loader:
+                    for batch in synchronized_dataloader_step(val_loader, is_dist()):
                         images = batch["images"]
                         input_ids = batch["input_ids"].to(device)
                         labels = batch["labels"].to(device)

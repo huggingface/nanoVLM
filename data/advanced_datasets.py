@@ -16,7 +16,7 @@ class ConstantLengthDataset(IterableDataset):
         max_sample_length: int = 1024,
         seq_length: int = 1024,
         num_of_sequences: int = 1024,
-        queue_size: int = 2048,
+        queue_size: int = 1024,
         max_images_per_example: int = 4,
         max_images_per_knapsack: int = 18,
     ):

@@ -39,7 +39,8 @@ class BaseCollator(object):
             if len(ids) <= max_length
         ]
         if not filtered:
-            return [], [], [], []
+            print("Warning: No samples in the batch are short enough to fit within the max_length limit.")
+            return {"input_ids": [], "labels": [], "attention_mask": [], "images": []}
         batch_token_ids, batch_labels, batch_attentions, batch_images = zip(*filtered)
         return {"input_ids": list(batch_token_ids), "labels": list(batch_labels), "attention_mask": list(batch_attentions), "images": list(batch_images)}
 
