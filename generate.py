@@ -49,10 +49,14 @@ def main():
     model.eval()
 
     tokenizer = get_tokenizer(model.cfg.lm_tokenizer, model.cfg.vlm_extra_tokens)
-    image_processor = get_image_processor(model.cfg.max_img_size, model.cfg.vit_img_size)
+    # FIXED: Use vit_img_size and splitted_image_size for MPS compatibility
+    # Original: get_image_processor(model.cfg.max_img_size, model.cfg.vit_img_size)
+    image_processor = get_image_processor(model.cfg.vit_img_size, model.cfg.splitted_image_size)
 
     img = Image.open(args.image).convert("RGB")
-    processed_image, splittedimage_count = image_processor(img)
+    # FIXED: Simplified image processing for MPS compatibility
+    # Original: processed_image, splittedimage_count = image_processor(img)
+    img_t = image_processor(img)[0][0].unsqueeze(0).to(device)
     vit_patch_size = splittedimage_count[0] * splittedimage_count[1]
 
     messages = [{"role": "user", "content": tokenizer.image_token * model.cfg.mp_image_token_length * vit_patch_size + args.prompt}]
