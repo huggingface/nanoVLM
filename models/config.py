@@ -34,6 +34,12 @@ class VLMConfig:
     lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
     lm_chat_template: str = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
+    # Quick fix for MPS compatibility - provides dummy EOS token ID
+    lm_eos_token_id: str = "Dummy"
+
+    # Quick fix for MPS compatibility - defines fixed image split size
+    splitted_image_size: int = 16   # Quick Fix
+    
     mp_pixel_shuffle_factor: int = 4
     mp_image_token_length: int = 64
 
