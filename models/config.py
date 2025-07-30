@@ -91,7 +91,7 @@ MiniVLMConfig.lm_n_blocks = 30
 MiniVLMConfig.lm_attn_scaling = 1.0
 MiniVLMConfig.lm_max_length = 1024
 MiniVLMConfig.lm_model_type = 'HuggingFaceTB/SmolLM2-135M-Instruct'
-MiniVLMConfig.lm_tokenizer = 'HuggingFaceTB/SmolLM2-135M-Instruct'
+MiniVLMConfig.lm_tokenizer = 'HuggingFaceTB/cosmo2-tokenizer'
 MiniVLMConfig.vlm_snapshot_path = 'snapshots-mini'
 MiniVLMConfig.hf_repo_name = 'nanoVLM-mini'
 

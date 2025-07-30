@@ -80,6 +80,8 @@ def downcast_model(model, dtype: torch.dtype):
 
 def check_bf16_and_compile_availability(device):
     """checks if bfloat 16 is available and torch.compile is available"""
+    bf16_available = False
+    torch_compile_available = False
     if device.type == "mps":
         bf16_available = True
         torch_compile_available = False # its not supported yet
@@ -583,7 +585,7 @@ def main():
 
     parser.add_argument('--use_135m', type=bool, default=False, help='Use 135M model')
     args = parser.parse_args()
-    
+
     if args.use_135m:
         vlm_cfg = config.MiniVLMConfig
         train_cfg = config.MiniTrainerConfig
