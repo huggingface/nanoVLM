@@ -1,0 +1,9 @@
+torch
+numpy
+torchvision
+pillow
+datasets
+huggingface-hub
+transformers
+wandb
+einops

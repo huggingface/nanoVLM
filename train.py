@@ -17,6 +17,8 @@ from torch.nn.parallel import DistributedDataParallel
 torch.manual_seed(0)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(0)
+if torch.mps.is_available():
+    torch.mps.seed()
 
 from data.collators import VQACollator
 from data.datasets import VQADataset
@@ -30,6 +32,8 @@ from data.data_utils import synchronized_dataloader_step
 #Otherwise, the tokenizer will throw a warning
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["expandable_segments"] = "true" # added just to be here, havent tested without it 
+
 
 # Fix for "Decompressed data too large" error with certain PNGs
 import PIL.PngImagePlugin
@@ -39,6 +43,9 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     numpy.random.seed(worker_seed)
     random.seed(worker_seed)
+
+def get_num_workers():
+    return min(8, os.cpu_count())
 
 def init_dist():
     dist.init_process_group(backend='nccl')
@@ -66,6 +73,23 @@ def dist_gather(o):
 
 def wrap_model(model):
     return DistributedDataParallel(model, device_ids=[dist.get_rank()])
+
+def downcast_model(model, dtype: torch.dtype):
+    os.environ["ModelDowncast"] = "1"
+    return model.to(dtype)
+
+def check_bf16_and_compile_availability(device):
+    """checks if bfloat 16 is available and torch.compile is available"""
+    if device.type == "mps":
+        bf16_available = True
+        torch_compile_available = False # its not supported yet
+
+    elif device == "cuda":
+        bf16_available = torch.cuda.is_bfloat16_supported()
+        major, minor = torch.cuda.get_device_capability()
+        torch_compile_available = hasattr(torch, 'compile') and major >= 7 and minor >= 5
+
+    return bf16_available, torch_compile_available
 
 def get_run_name(train_cfg, vlm_cfg):
     dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
@@ -134,13 +158,16 @@ def get_dataloaders(train_cfg, vlm_cfg):
     g.manual_seed(0)
 
     # Create dataloaders
+    num_workers = get_num_workers()
+    if is_master():
+        print(f"NanoVLM will use {num_workers} workers for dataloading")
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
         collate_fn=vqa_collator,
-        num_workers=8,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=not torch.mps.is_available(),
         drop_last=True,
         worker_init_fn=seed_worker,
         generator=g,
@@ -158,8 +185,8 @@ def get_dataloaders(train_cfg, vlm_cfg):
         batch_size=train_cfg.batch_size,
         sampler=val_sampler,
         collate_fn=vqa_collator,
-        num_workers=8,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=not torch.mps.is_available(),
         drop_last=True,
         worker_init_fn=seed_worker,
         generator=g,
@@ -183,6 +210,27 @@ def get_lr(it, max_lr, max_steps):
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
+
+def save_snapshot(save_directory, optimizer, current_step, current_epoch, vlm_cfg, train_cfg, dtype):
+    """Saves optimizer state, lr, step, epoch, config"""
+    if is_master():
+        snapshot_path = os.path.join(save_directory, "snapshot.pt")
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Save optimizer state and metadata
+        snapshot = {
+            "optimizer_state": optimizer.state_dict(),
+            "optimizer_params": optimizer.param_groups, 
+            "step": current_step,
+            "epoch": current_epoch,
+            "vlm_cfg": asdict(vlm_cfg), 
+            "train_cfg": asdict(train_cfg), 
+            "dtype": "bfloat16" if dtype == torch.bfloat16 else "float16"
+        }
+        # Save snapshot to a .pt file
+        torch.save(snapshot, snapshot_path)
+        print(f"Snapshot saved to {snapshot_path}")
+
 
 def train(train_cfg, vlm_cfg):
     train_loader, val_loader = get_dataloaders(train_cfg, vlm_cfg)
@@ -209,7 +257,7 @@ def train(train_cfg, vlm_cfg):
         model = VisionLanguageModel.from_pretrained(vlm_cfg.vlm_checkpoint_path)
     else:
         model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
-    
+
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
         print(f"Training summary{' (global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {int(len(train_loader)*get_world_size())} batches/epoch, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
@@ -229,7 +277,7 @@ def train(train_cfg, vlm_cfg):
     else:
         for p in list(model.decoder.parameters()) + list(model.vision_encoder.parameters()):
             p.requires_grad = False
-        
+    
     optimizer = optim.AdamW(param_groups)
     all_params = [p for group in optimizer.param_groups for p in group['params']]
 
@@ -243,10 +291,25 @@ def train(train_cfg, vlm_cfg):
         torch.mps.empty_cache()
     
     print(f"Using device: {device}")
+    bf16_available, torch_compile_available = check_bf16_and_compile_availability(device)
+    Dtype = torch.bfloat16 if device.type in ['cuda', 'cpu', 'mps'] and bf16_available else torch.float16
+    assert isinstance(Dtype, torch.dtype), f"Dtype is {Dtype}, expected torch.dtype"
+
+    if is_master():
+        print(f"Device compatability \nBFloat 16 is: {bf16_available}, torch.compile is: {torch_compile_available}")
+        print(f"NanoVLM will use {Dtype}!")
+
+    if train_cfg.downcast_model:
+        model = downcast_model(model, Dtype)
+        if is_master():
+            print(f"Downcasting model to {Dtype}")
+
     model.to(device)
-    
-    if train_cfg.compile:
-        model = torch.compile(model)
+    if train_cfg.compile and torch_compile_available:
+        model = torch.compile(model, mode=train_cfg.compile_mode, dynamic=train_cfg.compile_dynamic)
+        if is_master():
+            print(f'nanoVLM compiled with {train_cfg.compile_mode} mode, dynamic is {train_cfg.compile_dynamic}')
+        
     if is_dist():
         model = wrap_model(model)
 
@@ -295,7 +358,7 @@ def train(train_cfg, vlm_cfg):
             fw_bw_start = time.time()
             autocast_context = torch.autocast(
                 device_type=device.type,
-                dtype=torch.bfloat16 if device.type in ['cuda', 'cpu'] else torch.float16
+                dtype=Dtype
             )
             with autocast_context:
                 with context:
@@ -348,6 +411,9 @@ def train(train_cfg, vlm_cfg):
                 model.eval()
                 if device == "cuda":
                     torch.cuda.empty_cache()
+                if device.type == "mps":
+                    torch.mps.empty_cache()
+                
                 with torch.no_grad():
                     total_val_loss = 0
                     for batch in val_loader:
@@ -362,11 +428,14 @@ def train(train_cfg, vlm_cfg):
                         total_val_loss += loss.item()
                     avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0
                     avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
-                    if avg_val_loss < best_val_loss:
+                    if avg_val_loss < best_val_loss: # add min_improvment , snapshot
+
                         best_val_loss = avg_val_loss
                         if is_master():
                             save_model = model.module if is_dist() else model  # unwrap the model for saving if DDP
                             save_model.save_pretrained(save_directory=os.path.join(vlm_cfg.vlm_checkpoint_path, run_name))
+
+                            save_snapshot(save_directory=vlm_cfg.vlm_snapshot_path, optimizer=optimizer, current_step=global_step, current_epoch=epoch, vlm_cfg=vlm_cfg, train_cfg=train_cfg, dtype=Dtype)
 
                     lmms_results = {}
                     if train_cfg.use_lmms_eval:
@@ -500,15 +569,31 @@ def main():
     parser.add_argument('--lr_mp', type=float, help='Learning rate for the mapping network')
     parser.add_argument('--lr_backbones', type=float, help='Learning rate for the backbones')
     parser.add_argument('--vlm_checkpoint_path', type=str, help='Path to the VLM checkpoint for loading or saving')
-    parser.add_argument('--compile', type=bool, help='Use torch.compile to optimize the model')
+    #https://docs.pytorch.org/docs/stable/generated/torch.compile.html
+    parser.add_argument('--compile', type=bool, default=False, help='Use torch.compile to optimize the model')
+    parser.add_argument('--compile_mode', type=str, help='Use torch.compile mode to optimize the model', choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"])
     parser.add_argument('--log_wandb', type=bool, help='Log to wandb')
     parser.add_argument('--resume_from_vlm_checkpoint', type=bool, default=False, help='Resume training from VLM checkpoint specified by vlm_checkpoint_path (or default if not provided)')
     parser.add_argument('--no_log_wandb', action='store_true', help='Do not log to wandb')
+    parser.add_argument('--batch_size', type=int, help='Batch size for training')
+    parser.add_argument('--gradient_accumulation_steps', type=int, help='Gradient accumulation steps for training')
+    parser.add_argument('--wandb_entity', type=str, help='Entity to log to in wandb')
+    parser.add_argument('--downcast_model', type=bool, default=False, help='Downcast the model to bfloat16')
+    parser.add_argument('--use_lmms_eval', type=bool, default=False, help='Use lmms-eval for evaluation')
 
+    parser.add_argument('--use_135m', type=bool, default=False, help='Use 135M model')
     args = parser.parse_args()
-
-    vlm_cfg = config.VLMConfig()
-    train_cfg = config.TrainConfig()
+    
+    if args.use_135m:
+        vlm_cfg = config.MiniVLMConfig
+        train_cfg = config.MiniTrainerConfig
+        if is_master():
+            print("Using MiniVLMConfig and MiniTrainerConfig")
+    else:
+        vlm_cfg = config.VLMConfig()
+        train_cfg = config.TrainConfig()
+        if is_master():
+            print("Using VLMConfig and TrainerConfig")
 
     if args.lr_mp is not None:
         train_cfg.lr_mp = args.lr_mp
@@ -520,12 +605,29 @@ def main():
         train_cfg.compile = args.compile
     if args.no_log_wandb is True:
         train_cfg.log_wandb = False
+    
+    if args.wandb_entity is not None:
+        train_cfg.wandb_entity = args.wandb_entity
+
+    if args.batch_size is not None:
+        train_cfg.batch_size = args.batch_size
+    if args.gradient_accumulation_steps is not None:
+        train_cfg.gradient_accumulation_steps = args.gradient_accumulation_steps
+
+    if args.downcast_model is not None:
+        train_cfg.downcast_model = args.downcast_model
 
     if args.resume_from_vlm_checkpoint and args.vlm_checkpoint_path is not None:
-        train_cfg.resume_from_vlm_checkpoint = True
-        # When resuming a full VLM, we don't need to load individual backbone weights from original sources
+        train_cfg.resume_from_vlm_checkpoint = False #True
         vlm_cfg.vlm_load_backbone_weights = False
 
+    if train_cfg.use_lmms_eval:
+        try:
+            os.system("uv pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git")   
+        except Exception as e:
+            print(f"Error installing lmms-eval: {e}, will NOT use it for now...")
+            train_cfg.use_lmms_eval = False
+   
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         init_dist()
 

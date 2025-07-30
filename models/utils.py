@@ -49,3 +49,9 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float('Inf')
         logits = logits.masked_fill(indices_to_remove, filter_value)
 
     return logits
+
+
+def convert_dtypes(tensor: torch.Tensor, target_dtype: torch.dtype):
+    if tensor.dtype != target_dtype:
+        tensor = tensor.to(target_dtype)
+    return tensor

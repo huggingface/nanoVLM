@@ -5,7 +5,7 @@ from dataclasses import asdict
 from typing import Optional
 
 
-from models.utils import top_k_top_p_filtering
+from models.utils import top_k_top_p_filtering, convert_dtypes
 from models.vision_transformer import ViT
 from models.language_model import LanguageModel
 from models.modality_projector import ModalityProjector
@@ -73,6 +73,9 @@ class VisionLanguageModel(nn.Module):
             logits = self.decoder.head(logits) # Apply LM head
             # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
             # No need to slice logits based on image embedding size here, as the target mask handles it.
+            if os.environ.get("ModelDowncast"):
+                logits = convert_dtypes(logits, torch.float32) # if we downcast its more stable to have the logits in fp32
+            
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
 
         return logits, loss
