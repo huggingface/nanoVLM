@@ -655,3 +655,4 @@ class LanguageModel(nn.Module):
         
         print(f"Successfully loaded {cfg.lm_model_type} weights from safetensors. Model has {sum(p.numel() for p in model.parameters()):,} parameters.")
         return model
+    

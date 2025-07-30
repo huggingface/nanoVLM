@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+import torch
 
 @dataclass
 class VLMConfig:
@@ -46,8 +46,8 @@ class VLMConfig:
       "r4c1": "<row_4_col_1>", "r4c2": "<row_4_col_2>", "r4c3": "<row_4_col_3>", "r4c4": "<row_4_col_4>"})
     vlm_load_backbone_weights: bool = True
     vlm_checkpoint_path: str = 'checkpoints'
+    vlm_snapshot_path: str = 'snapshots'
     hf_repo_name: str = 'nanoVLM'
-
 
 @dataclass
 class TrainConfig:
@@ -66,7 +66,9 @@ class TrainConfig:
     max_images_per_knapsack: int = 18
     max_sample_length: int = 1024
     compile: bool = False
-    resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
+    compile_mode: str = 'default'
+    compile_dynamic: bool = False
+    resume_from_vlm_checkpoint: bool = False
     train_dataset_path: str = 'HuggingFaceM4/the_cauldron'
     train_dataset_name: tuple[str, ...] = ("all", )
     wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
@@ -75,3 +77,28 @@ class TrainConfig:
     lmms_eval_tasks: str = 'mmstar,mmmu,ocrbench,textvqa' # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')
     lmms_eval_limit: int = 2000
     lmms_eval_batch_size: int = 128
+    save_snapshot: bool = True
+    downcast_model: bool = False
+
+
+
+MiniVLMConfig = VLMConfig()
+MiniVLMConfig.lm_hidden_dim = 576
+MiniVLMConfig.lm_inter_dim = 1536
+MiniVLMConfig.lm_n_heads = 9
+MiniVLMConfig.lm_n_kv_heads = 3
+MiniVLMConfig.lm_n_blocks = 30
+MiniVLMConfig.lm_attn_scaling = 1.0
+MiniVLMConfig.lm_max_length = 1024
+MiniVLMConfig.lm_model_type = 'HuggingFaceTB/SmolLM2-135M-Instruct'
+MiniVLMConfig.lm_tokenizer = 'HuggingFaceTB/cosmo2-tokenizer'
+MiniVLMConfig.vlm_snapshot_path = 'snapshots-mini'
+MiniVLMConfig.hf_repo_name = 'nanoVLM-mini'
+
+
+MiniTrainerConfig = TrainConfig()
+MiniTrainerConfig.batch_size = 1
+MiniTrainerConfig.gradient_accumulation_steps = 4
+MiniTrainerConfig.train_dataset_name = ("ai2d", )
+MiniTrainerConfig.downcast_model = True
+MiniTrainerConfig.use_lmms_eval = False # install error!

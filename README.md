@@ -52,7 +52,7 @@ If you want to use `uv`:
 uv init --bare --python 3.12
 uv sync --python 3.12
 source .venv/bin/activate
-uv add torch numpy torchvision pillow datasets huggingface-hub transformers wandb
+uv add -r requirements.txt
 # Optional: for lmms-eval integration you have to install it from source, see section 'Evaluation with lmms-eval'
 ```
 
@@ -70,6 +70,7 @@ Dependencies:
 - `datasets` for the training datasets
 - `huggingface-hub` & `transformers` to load the pretrained backbones
 - `wandb` for logging
+- `einops` for data processing
 
 ## Training
 
@@ -109,6 +110,7 @@ Generation 5:  This is a cat sitting on the ground, which is covered with a mat.
 
 nanoVLM now supports evaluation using the comprehensive [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) toolkit:
 
+###### Note that lmms-eval is currently unavailable of M4 series!
 ```bash
 # Install lmms-eval (has to be from source)
 uv pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git
