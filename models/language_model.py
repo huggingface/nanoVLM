@@ -541,6 +541,8 @@ class LanguageModel(nn.Module):
         from huggingface_hub import hf_hub_download
         import safetensors
         import torch.nn.init as init
+        import json
+        from huggingface_hub.utils import EntryNotFoundError
                 
         # Load the HuggingFace config
         hf_config = AutoConfig.from_pretrained(cfg.lm_model_type)
@@ -572,8 +574,18 @@ class LanguageModel(nn.Module):
         
         # Create our model with potentially larger vocabulary
         model = cls(cfg)
-        safetensors_file = hf_hub_download(repo_id=cfg.lm_model_type, filename="model.safetensors")
         
+        try:
+            index_path = hf_hub_download(repo_id=cfg.lm_model_type, filename="model.safetensors.index.json")
+            with open(index_path, 'r') as f:
+                index = json.load(f)
+            # Get unique filenames from weight map
+            safetensors_filenames = sorted(list(set(index['weight_map'].values())))
+            # Download all the sharded files
+            safetensors_files = [hf_hub_download(repo_id=cfg.lm_model_type, filename=fn) for fn in safetensors_filenames]
+        except EntryNotFoundError:
+            safetensors_files = [hf_hub_download(repo_id=cfg.lm_model_type, filename="model.safetensors")]
+
         sd = model.state_dict()
         
         mapping = {
@@ -599,34 +611,42 @@ class LanguageModel(nn.Module):
         
         # Special handling for token embeddings with extended vocabulary
         has_extended_embeddings = False
-        with safetensors.safe_open(filename=safetensors_file, framework="pt", device="cpu") as f:
-            for hf_key, our_key in mapping.items():
-                if hf_key in f.keys() and our_key in sd:
-                    tensor = f.get_tensor(hf_key)
+        loaded_keys = set()
+        
+        for safetensors_file in safetensors_files:
+            with safetensors.safe_open(filename=safetensors_file, framework="pt", device="cpu") as f:
+                for hf_key, our_key in mapping.items():
+                    if our_key in loaded_keys:
+                        continue
                     
-                    # Special handling for token embeddings if vocab sizes differ
-                    if hf_key == 'model.embed_tokens.weight' and tensor.shape[0] != sd[our_key].shape[0]:
-                        has_extended_embeddings = True
-                        print(f"Extending token embeddings from {tensor.shape} to {sd[our_key].shape}")
+                    if hf_key in f.keys() and our_key in sd:
+                        tensor = f.get_tensor(hf_key)
                         
-                        # Copy existing embeddings to the beginning of our larger embedding matrix
-                        sd[our_key][:tensor.shape[0]].copy_(tensor)
+                        # Special handling for token embeddings if vocab sizes differ
+                        if hf_key == 'model.embed_tokens.weight' and tensor.shape[0] != sd[our_key].shape[0]:
+                            has_extended_embeddings = True
+                            print(f"Extending token embeddings from {tensor.shape} to {sd[our_key].shape}")
+                            
+                            # Copy existing embeddings to the beginning of our larger embedding matrix
+                            sd[our_key][:tensor.shape[0]].copy_(tensor)
+                            
+                            # Initialize the new embeddings using the same approach as the original model
+                            std = 0.02  # Common value, but you might want to adjust based on model
+                            init.normal_(sd[our_key][tensor.shape[0]:], mean=0.0, std=std)
+                            
+                            print(f"Initialized {sd[our_key].shape[0] - tensor.shape[0]} new token embeddings")
+                            sd['head.weight'].copy_(sd[our_key])  # Update the head weights as well
+                        elif tensor.shape == sd[our_key].shape:
+                            sd[our_key].copy_(tensor)
+                        else:
+                            print(f"Shape mismatch for {hf_key} -> {our_key}: {tensor.shape} vs {sd[our_key].shape}")
                         
-                        # Initialize the new embeddings using the same approach as the original model
-                        std = 0.02  # Common value, but you might want to adjust based on model
-                        init.normal_(sd[our_key][tensor.shape[0]:], mean=0.0, std=std)
-                        
-                        print(f"Initialized {sd[our_key].shape[0] - tensor.shape[0]} new token embeddings")
-                        sd['head.weight'].copy_(sd[our_key])  # Update the head weights as well
-                    elif tensor.shape == sd[our_key].shape:
-                        sd[our_key].copy_(tensor)
-                    else:
-                        print(f"Shape mismatch for {hf_key} -> {our_key}: {tensor.shape} vs {sd[our_key].shape}")
-                else:
-                    if hf_key not in f.keys():
-                        print(f"Warning: Key {hf_key} not found in safetensors file")
-                    if our_key not in sd:
-                        print(f"Warning: Key {our_key} not found in model state dict")
+                        loaded_keys.add(our_key)
+
+        for hf_key, our_key in mapping.items():
+            if our_key not in loaded_keys:
+                if our_key in sd:
+                    print(f"Warning: Key {our_key} not found in any safetensors file (HF key: {hf_key})")
         
         # Load the state dict
         model.load_state_dict(sd)
@@ -635,18 +655,22 @@ class LanguageModel(nn.Module):
         if has_extended_embeddings and hasattr(model, 'head') and 'head.weight' in sd:
             # If we have a separate output projection layer and extended the vocab
             # we should handle it similarly to the input embeddings
-            with safetensors.safe_open(filename=safetensors_file, framework="pt", device="cpu") as f:
-                if 'lm_head.weight' in f.keys():
-                    lm_head = f.get_tensor('lm_head.weight')
-                    if lm_head.shape[0] != sd['head.weight'].shape[0]:
-                        print(f"Extending LM head from {lm_head.shape} to {sd['head.weight'].shape}")
-                        # Copy existing weights
-                        sd['head.weight'][:lm_head.shape[0]].copy_(lm_head)
-                        # Initialize new weights
-                        std = 0.02
-                        init.normal_(sd['head.weight'][lm_head.shape[0]:], mean=0.0, std=std)
-                        # Load updated weights
-                        model.load_state_dict(sd)
+            lm_head_loaded = False
+            for safetensors_file in safetensors_files:
+                with safetensors.safe_open(filename=safetensors_file, framework="pt", device="cpu") as f:
+                    if 'lm_head.weight' in f.keys():
+                        lm_head = f.get_tensor('lm_head.weight')
+                        if lm_head.shape[0] != sd['head.weight'].shape[0]:
+                            print(f"Extending LM head from {lm_head.shape} to {sd['head.weight'].shape}")
+                            # Copy existing weights
+                            sd['head.weight'][:lm_head.shape[0]].copy_(lm_head)
+                            # Initialize new weights
+                            std = 0.02
+                            init.normal_(sd['head.weight'][lm_head.shape[0]:], mean=0.0, std=std)
+                            # Load updated weights
+                            model.load_state_dict(sd)
+                        lm_head_loaded = True
+                        break
         
         # Handle weight tying (if needed)
         if cfg.lm_tie_weights and hasattr(model, 'head') and hasattr(model, 'token_embedding'):

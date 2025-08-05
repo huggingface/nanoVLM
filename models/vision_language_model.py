@@ -48,25 +48,27 @@ class VisionLanguageModel(nn.Module):
 
         return updated_token_embd
 
-    def forward(self, input_ids, images, attention_mask=None, targets=None):
+    def _process_images(self, images, device):
         if isinstance(images, list):
-            if not images: # Handle cases with no images
-                images = torch.empty(0, self.cfg.vit_channels, self.cfg.vit_image_size, self.cfg.vit_image_size, device=input_ids.device)
+            if images and isinstance(images[0], list):
+                images = [img for sublist in images for img in sublist]
+
+            if not images:  # Handle cases with no images
+                return None
             else:
-                if isinstance(images[0], list):
-                    images = [img for sublist in images for img in sublist]
-                images = torch.cat(images, dim=0).to(input_ids.device)
+                return torch.cat(images, dim=0).to(device)
+        return images # Already a tensor
 
-        image_embd = self.vision_encoder(images)
-        image_embd = self.MP(image_embd) # [num_images, mp_image_token_length, D_lm]
-
+    def forward(self, input_ids, images, attention_mask=None, targets=None):
+        images_tensor = self._process_images(images, input_ids.device)
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
 
-        updated_token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
+        if images_tensor is not None:
+            image_embd = self.vision_encoder(images_tensor)
+            image_embd = self.MP(image_embd)  # [num_images, mp_image_token_length, D_lm]
+            token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
-        # The updated_token_embd is now the token_embd with image parts replaced.
-        # The attention_mask comes from the collator and should already cover the full sequence.
-        logits, _ = self.decoder(updated_token_embd, attention_mask=attention_mask)
+        logits, _ = self.decoder(token_embd, attention_mask=attention_mask)
 
         loss = None
         if targets is not None:
@@ -79,30 +81,22 @@ class VisionLanguageModel(nn.Module):
 
     @torch.inference_mode()
     def generate(self, input_ids, images, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
-        if isinstance(images, list):
-            if not images: # Handle cases with no images
-                images = torch.empty(0, self.cfg.vit_channels, self.cfg.vit_image_size, self.cfg.vit_image_size, device=input_ids.device)
-            else:
-                if isinstance(images[0], list):
-                    images = [img for sublist in images for img in sublist]
-                images = torch.cat(images, dim=0).to(input_ids.device)
+        images_tensor = self._process_images(images, input_ids.device)
+        token_embd = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
 
-        # 1. Process image
-        image_embd = self.vision_encoder(images) # [B, T_img_feat, D_model]
-        image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
+        if images_tensor is not None:
+            # 1. Process image if present
+            image_embd = self.vision_encoder(images_tensor) # [B, T_img_feat, D_model]
+            image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
+            # 2. Combine image and text embeddings
+            token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
-        # 2. Embed initial text prompt tokens
-        prompt_token_embeds = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
-
-        # 3. Combine image and text embeddings
-        initial_combined_embeds = self._replace_img_tokens_with_embd(input_ids, prompt_token_embeds, image_embd)
-
-        current_total_seq_len = initial_combined_embeds.size(1)
-        batch_size = input_ids.size(0) # Or initial_combined_embeds.size(0)
+        current_total_seq_len = token_embd.size(1)
+        batch_size = input_ids.size(0) # Or token_embd.size(0)
         
         # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder(
-            initial_combined_embeds,
+            token_embd,
             attention_mask=attention_mask, # Use the provided attention mask
             kv_cache=None,
             start_pos=0

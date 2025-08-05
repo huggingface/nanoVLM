@@ -18,6 +18,9 @@ class BaseCollator(object):
         if max_length is not None:
             batch = self._discard_samples_that_are_too_long(batch, max_length)
 
+        if len(batch["input_ids"]) == 0:
+            return batch
+
         # Pad samples to max length
         if max_length is not None:
             max_len = max_length
@@ -39,7 +42,7 @@ class BaseCollator(object):
             if len(ids) <= max_length
         ]
         if not filtered:
-            return [], [], [], []
+            return {"input_ids": [], "labels": [], "attention_mask": [], "images": []}
         batch_token_ids, batch_labels, batch_attentions, batch_images = zip(*filtered)
         return {"input_ids": list(batch_token_ids), "labels": list(batch_labels), "attention_mask": list(batch_attentions), "images": list(batch_images)}
 

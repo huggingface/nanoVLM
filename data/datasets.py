@@ -2,6 +2,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from data.processors import get_image_string
+import logging
 
 
 class BaseDataset(Dataset):
@@ -28,10 +29,15 @@ class BaseDataset(Dataset):
             messages.append({"role": "user", "content": text['user']})
             messages.append({"role": "assistant", "content": text['assistant']})
 
-        image_string = get_image_string(self.tokenizer, splitted_image_counts, self.mp_image_token_length)
+        # Safety check to ensure no image tokens are present in the text before adding them.
+        for msg in messages:
+            if self.tokenizer.image_token in msg["content"]:
+                logging.warning(f"Found and removed an image token in the {msg['role']} text before adding the image string.")
+                msg["content"] = msg["content"].replace(self.tokenizer.image_token, "")
 
         if len(splitted_image_counts) > 0:
-            messages[0]["content"] = image_string + messages[0]["content"]      
+            image_string = get_image_string(self.tokenizer, splitted_image_counts, self.mp_image_token_length)
+            messages[0]["content"] = image_string + messages[0]["content"]
 
         return messages
 
@@ -86,8 +92,10 @@ class VQADataset(BaseDataset):  # Visual Question Answering Dataset
         if not isinstance(images_data, list):
             images_data = [images_data]
 
-        # Now process the images
-        processed_images, splitted_image_counts = self._process_images(images_data)
+        processed_images = []
+        splitted_image_counts = []
+        if images_data: # Only process if there are images
+            processed_images, splitted_image_counts = self._process_images(images_data)
 
         messages = self._get_messages(item, splitted_image_counts)
 

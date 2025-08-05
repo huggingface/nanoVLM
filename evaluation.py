@@ -272,6 +272,9 @@ def parse_eval_args() -> argparse.Namespace:
     )
     parser.add_argument("--no_log_wandb", action="store_true", help="If True, does not log to wandb")
     parser.add_argument("--process_with_media", action="store_true", help="Whether you will process you dataset with audio, image. By default set to False" "In case some benchmarks need to be processed with media, set this flag to True.")
+    parser.add_argument("--checkpoint_path", type=str, default="", help="Path to the model checkpoint directory.")
+    parser.add_argument("--global_step", type=int, default=0, help="Global step at which the checkpoint was saved.")
+    parser.add_argument("--run_name", type=str, default="", help="The name of the training run.")
     args = parser.parse_args()
     return args
     

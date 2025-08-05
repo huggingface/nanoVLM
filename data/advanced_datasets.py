@@ -16,7 +16,7 @@ class ConstantLengthDataset(IterableDataset):
         max_sample_length: int = 1024,
         seq_length: int = 1024,
         num_of_sequences: int = 1024,
-        queue_size: int = 2048,
+        queue_size: int = 2,
         max_images_per_example: int = 4,
         max_images_per_knapsack: int = 18,
     ):
@@ -26,7 +26,7 @@ class ConstantLengthDataset(IterableDataset):
         self.max_length = seq_length * num_of_sequences
         self.epoch = 0  # only advanced when infinite=True
         self.infinite = infinite
-        self.queue_size = queue_size
+        self.queue_size = max(queue_size, 1)
         self.max_images_per_example = max_images_per_example
         self.max_images_per_knapsack = max_images_per_knapsack
         self._sentinel = object()
@@ -87,10 +87,11 @@ class ConstantLengthDataset(IterableDataset):
         producer.start()
 
         while True:
-            sample = queue.get()
-            if sample is self._sentinel:
+            batch_of_batches = queue.get()
+            if batch_of_batches is self._sentinel:
                 break
-            yield sample
+            for batch in batch_of_batches:
+                yield batch
 
     def _producer(
         self,
@@ -147,18 +148,18 @@ class ConstantLengthDataset(IterableDataset):
                 max_images_per_knapsack=self.max_images_per_knapsack,
             )
 
+            packed_group = []
             for g in groups:
                 packed = self._pack_one_group(g, buffer, self.seq_length)
+                packed_group.append({
+                    "input_ids":      packed[0],
+                    "labels":         packed[1],
+                    "attention_mask": packed[2],
+                    "images":         packed[3],
+                })
 
-                # put blocks if queue is full.
-                queue.put(
-                    {
-                        "input_ids": packed[0],
-                        "labels": packed[1],
-                        "attention_mask": packed[2],
-                        "images": packed[3],
-                    }
-                )
+            if packed_group:
+                queue.put(packed_group)
 
         # finished → unblock consumer
         queue.put(self._sentinel)
