@@ -9,7 +9,7 @@
 #SBATCH --qos=normal
 
 # Change to project directory
-cd /fsx/andi/nanoVLM
+cd /fsx/luis_wiedmann/nanoVLM
 source .venv/bin/activate
 
 # Activate virtual environment

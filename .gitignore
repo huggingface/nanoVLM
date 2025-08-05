@@ -25,7 +25,9 @@ uv.lock
 checkpoints/
 notebooks/
 results/
-*.slurm
+train_job_distributed.slurm
+train_job_single.slurm
+train_job.slurm
 *.arrow
 /shards/*
 *.png
