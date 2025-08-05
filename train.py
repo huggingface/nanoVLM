@@ -432,7 +432,7 @@ def train(train_cfg, vlm_cfg):
 
                         if train_cfg.use_lmms_eval:
                             # Submit evaluation job
-                            cmd = f"sbatch --export=HF_HOME=$HF_HOME eval.slurm {checkpoint_path_step} {global_step} {run_name} {train_cfg.lmms_eval_limit} {train_cfg.lmms_eval_tasks} {train_cfg.lmms_eval_batch_size}"
+                            cmd = f"sbatch eval.slurm {checkpoint_path_step} {global_step} {run_name} {train_cfg.lmms_eval_limit} {train_cfg.lmms_eval_tasks} {train_cfg.lmms_eval_batch_size}"
                             print(f"Submitting evaluation job: {cmd}")
                             subprocess.run(cmd, shell=True)
 
