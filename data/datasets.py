@@ -25,14 +25,17 @@ class BaseDataset(Dataset):
 
     def _get_messages(self, item, splitted_image_counts):
         messages = []
-        for text in item['texts']:
-            messages.append({"role": "user", "content": text['user']})
-            messages.append({"role": "assistant", "content": text['assistant']})
+        for text in item['conversations']:
+            if text['from'] == 'human':
+                role = 'user'
+            else:
+                role = 'assistant'
+            messages.append({"role": role, "content": text['value']})
 
         # Safety check to ensure no image tokens are present in the text before adding them.
         for msg in messages:
             if self.tokenizer.image_token in msg["content"]:
-                logging.warning(f"Found and removed an image token in the {msg['role']} text before adding the image string.")
+                logging.debug(f"Found and removed an image token in the {msg['role']} text before adding the image string.")
                 msg["content"] = msg["content"].replace(self.tokenizer.image_token, "")
 
         if len(splitted_image_counts) > 0:
@@ -88,7 +91,7 @@ class VQADataset(BaseDataset):  # Visual Question Answering Dataset
         item = self.dataset[idx]
 
         # Handle images (should be a list)
-        images_data = item['images']
+        images_data = item['image']
         if not isinstance(images_data, list):
             images_data = [images_data]
 
