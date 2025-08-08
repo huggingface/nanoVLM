@@ -2,11 +2,18 @@
 #SBATCH --job-name=lmms_eval
 #SBATCH --output=logs/lmms_eval/%j.out
 #SBATCH --error=logs/lmms_eval/%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=11
 #SBATCH --partition=hopper-prod
 #SBATCH --qos=normal
+
+unset RANK
+unset LOCAL_RANK
+unset WORLD_SIZE
+unset MASTER_ADDR
+unset MASTER_PORT
+unset NCCL_SOCKET_IFNAME
 
 # Change to project directory
 cd /fsx/luis_wiedmann/nanoVLM
