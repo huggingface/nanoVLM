@@ -25,6 +25,7 @@ uv.lock
 checkpoints/
 notebooks/
 results/
+eval_results/
 train_job_distributed.slurm
 train_job_single.slurm
 train_job.slurm

@@ -101,7 +101,7 @@ class NanoVLMWrapper(lmms):
             toks = self.tokenizer.encode(x[0])
             return -len(toks), x[0]
 
-        pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
+        pbar = tqdm(total=len(requests), disable=(self._rank != 0), desc="Model Responding")
         # we group requests by their generation_kwargs,
         # so that we don't try to execute e.g. greedy sampling and temp=0.8 sampling
         # in the same batch.
