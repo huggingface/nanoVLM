@@ -71,7 +71,7 @@ class TrainConfig:
     max_sample_length: int = 4096
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
-    train_dataset_path: str = '/fsx/luis_wiedmann/data-dedup/data/LLaVA-OneVision-Data'
+    train_dataset_path: str = '/fsx/luis_wiedmann/data-dedup/data/cambrian_deduplicated' #'/fsx/luis_wiedmann/data-dedup/data/LLaVA-OneVision-Data'
     train_dataset_name: tuple[str, ...] = ("all",)
     wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
     log_wandb: bool = True
