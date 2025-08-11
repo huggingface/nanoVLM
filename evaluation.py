@@ -275,6 +275,9 @@ def parse_eval_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint_path", type=str, default="", help="Path to the model checkpoint directory.")
     parser.add_argument("--global_step", type=int, default=0, help="Global step at which the checkpoint was saved.")
     parser.add_argument("--run_name", type=str, default="", help="The name of the training run.")
+    parser.add_argument("--checkpoints_dir", type=str, default="", help="Path to the checkpoints directory.")
+    parser.add_argument("--steps", type=int, nargs='*', default=None, help="Specific steps to evaluate. If not provided, all checkpoints will be evaluated.")
+    parser.add_argument("--eval_tasks", type=str, nargs='+', default=None, help="List of evaluation tasks to run.")
     args = parser.parse_args()
     return args
     
