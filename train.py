@@ -16,7 +16,7 @@ import subprocess
 import torch.optim as optim
 from statistics import mean
 from dataclasses import asdict
-from datasets import load_dataset, concatenate_datasets, get_dataset_config_names
+from datasets import load_dataset, concatenate_datasets, get_dataset_config_names, load_from_disk
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -127,14 +127,15 @@ def get_dataloaders(train_cfg, vlm_cfg):
     dataset_names_to_load = train_cfg.train_dataset_name
     if "all" in dataset_names_to_load:
         dataset_names_to_load = get_dataset_config_names(train_cfg.train_dataset_path)
+        print(f"Loading datasets: {dataset_names_to_load}")
 
     for dataset_name in dataset_names_to_load:
         try:
-            train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name)
-            train_ds['train'][0] # Check if the dataset is loaded correctly
-            if len(train_ds['train']) > 1000000:  # Sample first 1M samples to reduce unbalance between datasets
-                train_ds['train'] = train_ds['train'].select(range(1000000))
-            combined_train_data.append(train_ds['train'])
+            train_ds = load_from_disk(os.path.join(train_cfg.train_dataset_path, dataset_name))
+            train_ds[0] # Check if the dataset is loaded correctly
+            # if len(train_ds) > 1000000:  # Sample first 1M samples to reduce unbalance between datasets
+            #     train_ds = train_ds.select(range(1000000))
+            combined_train_data.append(train_ds)
         except Exception as e:
             if is_master():
                 print(f"Warning: Failed to load dataset config '{dataset_name}' from '{train_cfg.train_dataset_path}'. Error: {e}")
@@ -144,6 +145,8 @@ def get_dataloaders(train_cfg, vlm_cfg):
         raise ValueError("No valid datasets were loaded. Please check your dataset path and configurations.")
     
     train_ds = concatenate_datasets(combined_train_data)
+
+    print(train_ds)
     
     train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatenated datasets
     
@@ -164,6 +167,8 @@ def get_dataloaders(train_cfg, vlm_cfg):
     train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*4, queue_size=8,
                                           max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
     val_dataset = VQADataset(train_ds.select(range(train_size, total_samples)), tokenizer, image_processor, vlm_cfg.mp_image_token_length)
+
+    print(f"Train dataset size: {len(train_dataset)} samples, Val dataset size: {len(val_dataset)} samples")
 
     # Create collators
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)

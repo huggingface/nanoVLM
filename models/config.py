@@ -72,7 +72,7 @@ class TrainConfig:
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
     train_dataset_path: str = '/fsx/luis_wiedmann/data-dedup/data/the_cauldron'
-    train_dataset_name: tuple[str, ...] = ("all",)
+    train_dataset_name: tuple[str, ...] = ('rendered_text', 'localized_narratives', 'scienceqa', 'tqa', 'screen2words', 'finqa', 'raven', 'vqarad', 'iconqa', 'vistext', 'iam', 'diagram_image_to_text', 'tallyqa', 'vsr', 'aokvqa', 'robut_wikisql', 'chart2text', 'geomverse', 'st_vqa', 'hateful_memes', 'vqav2', 'hitab', 'intergps', 'clevr', 'chartqa', 'docvqa', 'datikz', 'websight', 'ai2d', 'figureqa', 'multihiertt', 'infographic_vqa', 'visual7w', 'textvqa', 'dvqa', 'robut_wtq', 'ocrvqa', 'tabmwp', 'tat_qa', 'nlvr2', 'mapqa', 'visualmrc', 'textcaps', 'robut_sqa', 'cocoqa', 'plotqa', 'spot_the_diff', 'mimic_cgd')
     wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
     log_wandb: bool = True
     use_lmms_eval: bool = True # Use lmms-eval for evaluation
