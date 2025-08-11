@@ -72,7 +72,7 @@ class TrainConfig:
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
     train_dataset_path: str = '/fsx/luis_wiedmann/data-dedup/data/cambrian_deduplicated' #'/fsx/luis_wiedmann/data-dedup/data/LLaVA-OneVision-Data'
-    train_dataset_name: tuple[str, ...] = ("all",)
+    train_dataset_name: tuple[str, ...] = ('synthdog_500k_modified', 'lvis_instruct4v_220k', 'ai2d_15k', 'geo170k', 'sketchyvqa_8k', 'alfworldgpt_45k', 'design2code_0k', 'scienceqa_12k', 'random_3rd_dvqa_2325k', 'allava-vflan-200k', 'code_feedback_66k', 'orca_994k', 'clean_llava_instruct_150k_llavar_20k', 'docvqa_39k', 'qalign_200k', 'allava-laion-500k', 'vizwiz_20k', 'laion_gpt4v_11k', 'filtered_data_engine_161k', 'oodvqa_8k', 'lnqa_302k', 'screenqa_79k', 'q-instruct_200k', 'mathinstruct_262k', 'tallyqa_250k', 'wizardlm_143k', 'idefics375k', 'chartqa_28k', 'clevr_700k', 'pathvqa_32k', 'arxivqa_100k', 'idk_11k', 'sharegpt4v_mix665k_cap23k_coco-ap9k_lcs3k_sam9k_div2k', 'orca_math_200k', 'gpt77k', 'mathvision_3k')
     wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
     log_wandb: bool = True
     use_lmms_eval: bool = True # Use lmms-eval for evaluation
