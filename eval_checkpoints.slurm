@@ -6,14 +6,15 @@
 #SBATCH --nodes=1
 #SBATCH --gpus=8
 #SBATCH --partition=hopper-prod
-#SBATCH --qos=normal
+#SBATCH --qos=high
 #SBATCH --array=0
 
 # Change to project directory
 cd /fsx/luis_wiedmann/nanoVLM
 source .venv/bin/activate
 
-tasks='mmstar,textvqa,ocrbench,mmmu'
+tasks='mmmu'
 runs=('checkpoints/nanoVLM_siglip2-base-patch16-512_2048_mp4_SmolLM2-360M-Instruct_32xGPU_1988samples_bs512_40000_lr5e-05-0.00512_0808-150443')
+steps=(300)
 
-python run_checkpoint_evaluations.py --checkpoints_dir ${runs[$SLURM_ARRAY_TASK_ID]} --eval_tasks $tasks
+torchrun --nproc_per_node=8 run_checkpoint_evaluations.py --checkpoints_dir ${runs[$SLURM_ARRAY_TASK_ID]} --eval_tasks $tasks --steps ${steps[@]}

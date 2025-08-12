@@ -2,9 +2,39 @@ import argparse
 import os
 import json
 import torch
+import torch.distributed as dist
 from pathlib import Path
 from typing import List, Optional, Dict, Set, Tuple
 from models.vision_language_model import VisionLanguageModel
+
+from torch.nn.parallel import DistributedDataParallel
+
+def init_dist():
+    dist.init_process_group(backend='nccl')
+    torch.cuda.set_device(dist.get_rank())
+
+def destroy_dist():
+    dist.destroy_process_group()
+
+def is_dist():
+    return dist.is_available() and dist.is_initialized()
+
+def is_master():
+    return dist.get_rank() == 0 if is_dist() else True
+
+def get_world_size():
+    return dist.get_world_size() if is_dist() else 1
+
+def get_rank():
+    return dist.get_rank() if is_dist() else 0
+
+def dist_gather(o):
+    o_all = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(o_all, o)
+    return o_all
+
+def wrap_model(model):
+    return DistributedDataParallel(model, device_ids=[dist.get_rank()])
 
 def run_evaluation(checkpoint_path, global_step, tasks, limit, batch_size):
     from evaluation import cli_evaluate
@@ -25,22 +55,25 @@ def run_evaluation(checkpoint_path, global_step, tasks, limit, batch_size):
     
     eval_results = cli_evaluate(eval_args)
 
-    output_data = {
-        'global_step': global_step,
-        'results': {}
-    }
+    dist.barrier()  # Ensure all processes finish before proceeding
 
-    if eval_results and "results" in eval_results[0]:
-        print("Processing evaluation results.")
-        for task_name, task_results in eval_results[0]["results"].items():
-            for metric_name, metric_value in task_results.items():
-                if isinstance(metric_value, (int, float)):
-                    key = f"{task_name}_{metric_name.split(',')[0]}"
-                    output_data['results'][key] = metric_value
-    else:
-        print("No evaluation results to process.")
+    if is_master():
+        output_data = {
+            'global_step': global_step,
+            'results': {}
+        }
 
-    return output_data
+        if eval_results and "results" in eval_results[0]:
+            print("Processing evaluation results.")
+            for task_name, task_results in eval_results[0]["results"].items():
+                for metric_name, metric_value in task_results.items():
+                    if isinstance(metric_value, (int, float)):
+                        key = f"{task_name}_{metric_name.split(',')[0]}"
+                        output_data['results'][key] = metric_value
+        else:
+            print("No evaluation results to process.")
+
+        return output_data
 
 
 def discover_checkpoints(checkpoints_dir: str) -> Dict[str, List[int]]:
@@ -227,42 +260,53 @@ def orchestrate_evaluations(
         limit: Optional limit for number of examples per task
         batch_size: Batch size for evaluation
     """
-    print(f"Starting evaluation orchestration for: {checkpoints_dir}")
-    print(f"Tasks to evaluate: {tasks}")
-    if specific_steps:
-        print(f"Specific steps: {specific_steps}")
-    
-    # 1. Discover available checkpoints
-    print("\n1. Discovering checkpoints...")
-    run_steps = discover_checkpoints(checkpoints_dir)
-    
-    if not run_steps:
-        print("No checkpoint steps found!")
-        return
-    
-    run_name = list(run_steps.keys())[0]
-    steps = run_steps[run_name]
-    print(f"Found {len(steps)} checkpoint steps for {run_name}: {steps}")
-    
-    # 2. Check existing evaluation results
-    print("\n2. Checking existing evaluation results...")
-    existing_results = get_existing_eval_results(eval_results_dir, run_name)
-    print(f"Found existing results for {len(existing_results)} steps")
-    
-    # 3. Identify missing evaluations
-    print("\n3. Identifying missing evaluations...")
-    missing_evaluations = identify_missing_evaluations(
-        run_steps, existing_results, tasks, specific_steps
-    )
+    if is_master():
+        print(f"Starting evaluation orchestration for: {checkpoints_dir}")
+        print(f"Tasks to evaluate: {tasks}")
+        if specific_steps:
+            print(f"Specific steps: {specific_steps}")
+        
+        # 1. Discover available checkpoints
+        print("\n1. Discovering checkpoints...")
+        run_steps = discover_checkpoints(checkpoints_dir)
+        
+        if not run_steps:
+            print("No checkpoint steps found!")
+            missing_evaluations = []
+        else:
+            run_name = list(run_steps.keys())[0]
+            steps = run_steps[run_name]
+            print(f"Found {len(steps)} checkpoint steps for {run_name}: {steps}")
+            
+            # 2. Check existing evaluation results
+            print("\n2. Checking existing evaluation results...")
+            existing_results = get_existing_eval_results(eval_results_dir, run_name)
+            print(f"Found existing results for {len(existing_results)} steps")
+            
+            # 3. Identify missing evaluations
+            print("\n3. Identifying missing evaluations...")
+            missing_evaluations = identify_missing_evaluations(
+                run_steps, existing_results, tasks, specific_steps
+            )
+            
+            if not missing_evaluations:
+                print("No missing evaluations found! All requested evaluations are complete.")
+            else:
+                print(f"Found {len(missing_evaluations)} missing evaluations:")
+                for step, missing_tasks in missing_evaluations:
+                    print(f"  Step {step}: {missing_tasks}")
+    else:
+        missing_evaluations = None
+
+    # Broadcast missing_evaluations from master to all processes
+    if is_dist():
+        object_list = [missing_evaluations]
+        dist.broadcast_object_list(object_list, src=0)
+        missing_evaluations = object_list[0]
     
     if not missing_evaluations:
-        print("No missing evaluations found! All requested evaluations are complete.")
         return
-    
-    print(f"Found {len(missing_evaluations)} missing evaluations:")
-    for step, missing_tasks in missing_evaluations:
-        print(f"  Step {step}: {missing_tasks}")
-    
+
     # 4. Run missing evaluations
     print(f"\n4. Running missing evaluations...")
     for i, (step, missing_tasks) in enumerate(missing_evaluations, 1):
@@ -278,14 +322,17 @@ def orchestrate_evaluations(
             results = run_evaluation(checkpoint_path, step, missing_tasks, limit, batch_size)
             
             # Save results
-            save_evaluation_results(eval_results_dir, run_name, step, results)
+            if is_master():
+                save_evaluation_results(eval_results_dir, run_name, step, results)
             print(f"✓ Completed evaluation for step {step}")
-            
+            dist.barrier()
+
         except Exception as e:
             print(f"✗ Failed evaluation for step {step}: {e}")
             continue
-    
-    print(f"\n✓ Evaluation orchestration complete!")
+
+    if is_master():
+        print(f"\n✓ Evaluation orchestration complete!")
 
 
 def main():
@@ -298,6 +345,9 @@ def main():
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size for evaluation")
     
     args = parser.parse_args()
+
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        init_dist()
     
     orchestrate_evaluations(
         checkpoints_dir=args.checkpoints_dir,
@@ -307,6 +357,9 @@ def main():
         limit=args.limit,
         batch_size=args.batch_size
     )
+
+    if is_dist():
+        destroy_dist()
 
 if __name__ == "__main__":
     main()
