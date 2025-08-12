@@ -10,8 +10,10 @@ from models.vision_language_model import VisionLanguageModel
 from torch.nn.parallel import DistributedDataParallel
 
 def init_dist():
-    dist.init_process_group(backend='nccl')
-    torch.cuda.set_device(dist.get_rank())
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    device = torch.device(f'cuda:{local_rank}')
+    dist.init_process_group(backend='nccl', device_id=device)
+    torch.cuda.set_device(local_rank)
 
 def destroy_dist():
     dist.destroy_process_group()
@@ -54,8 +56,6 @@ def run_evaluation(checkpoint_path, global_step, tasks, limit, batch_size):
     )
     
     eval_results = cli_evaluate(eval_args)
-
-    dist.barrier()  # Ensure all processes finish before proceeding
 
     if is_master():
         output_data = {
@@ -298,6 +298,9 @@ def orchestrate_evaluations(
     else:
         missing_evaluations = None
 
+    if is_dist():
+        dist.barrier()  # Ensure all processes reach this point before proceeding
+
     # Broadcast missing_evaluations from master to all processes
     if is_dist():
         object_list = [missing_evaluations]
@@ -305,13 +308,14 @@ def orchestrate_evaluations(
         missing_evaluations = object_list[0]
     
     if not missing_evaluations:
+        print(f"Rank {get_rank()}: No missing evaluations to run.")
         return
 
     # 4. Run missing evaluations
-    print(f"\n4. Running missing evaluations...")
+    print(f"\n4. Running missing evaluations on rank {get_rank()}...")
     for i, (step, missing_tasks) in enumerate(missing_evaluations, 1):
-        print(f"\nRunning evaluation {i}/{len(missing_evaluations)}: Step {step}, Tasks: {missing_tasks}")
-        
+        print(f"\nRunning evaluation {i}/{len(missing_evaluations)}: Step {step}, Tasks: {missing_tasks}, Rank: {get_rank()}")
+
         checkpoint_path = os.path.join(checkpoints_dir, f"step_{step}")
         if not os.path.exists(checkpoint_path):
             print(f"Warning: Checkpoint path does not exist: {checkpoint_path}")
@@ -320,15 +324,15 @@ def orchestrate_evaluations(
         try:
             # Run evaluation for missing tasks
             results = run_evaluation(checkpoint_path, step, missing_tasks, limit, batch_size)
-            
+            print(f"✓ Completed evaluation for step {step}, Rank: {get_rank()}")
+
             # Save results
             if is_master():
                 save_evaluation_results(eval_results_dir, run_name, step, results)
-            print(f"✓ Completed evaluation for step {step}")
-            dist.barrier()
+                print(f"✓ Saved evaluation results for step {step}")
 
         except Exception as e:
-            print(f"✗ Failed evaluation for step {step}: {e}")
+            print(f"✗ Failed evaluation for step {step}, Rank: {get_rank()}: {e}")
             continue
 
     if is_master():
