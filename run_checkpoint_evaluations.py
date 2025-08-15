@@ -1,4 +1,5 @@
 import argparse
+import time
 import os
 import json
 import torch
@@ -188,7 +189,7 @@ def identify_missing_evaluations(
             
             if step not in existing_results:
                 # No results exist for this step at all
-                missing_tasks = tasks.copy()
+                missing_tasks = tasks_list.copy()
             else:
                 # Check which tasks are missing
                 existing_tasks = set(existing_results[step].keys())
@@ -346,13 +347,15 @@ def main():
     parser.add_argument("--eval_results_dir", default="eval_results", help="Directory for evaluation results")
     parser.add_argument("--steps", nargs="*", type=int, help="Specific steps to evaluate")
     parser.add_argument("--limit", type=int, help="Limit number of examples per task")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for evaluation")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for evaluation")
     
     args = parser.parse_args()
 
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         init_dist()
-    
+
+    start_time = time.time()
+
     orchestrate_evaluations(
         checkpoints_dir=args.checkpoints_dir,
         tasks=args.eval_tasks,
@@ -361,6 +364,10 @@ def main():
         limit=args.limit,
         batch_size=args.batch_size
     )
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Total evaluation time: {elapsed_time:.2f} seconds")
 
     if is_dist():
         destroy_dist()

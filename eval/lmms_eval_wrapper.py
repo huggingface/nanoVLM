@@ -53,7 +53,7 @@ class NanoVLMWrapper(lmms):
     def _prepare_visual_input(self, visual_list: List[Image.Image]) -> Optional[torch.Tensor]:
         """Convert visual inputs to model format."""
         if not visual_list or visual_list[0] is None: # Still check if the list is empty or contains None
-            return None
+            return None, None
             
         images = []
         splitted_image_ratios = []
@@ -76,16 +76,19 @@ class NanoVLMWrapper(lmms):
         
         if images:
             return images, splitted_image_ratios
-        return None
-        
+        return None, None
+
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         raise NotImplementedError("Loglikelihood is not implemented for nanoVLM")
 
     def flatten(self, input):
         new_list = []
         for sublist in input:
-            for i in sublist:
-                new_list.append(i)
+            if sublist is None:
+                new_list.append(None)
+            else:
+                for i in sublist:
+                    new_list.append(i)
         return new_list
     
     def generate_until(self, requests: List[Instance]) -> List[str]:
@@ -116,7 +119,10 @@ class NanoVLMWrapper(lmms):
             splitted_image_idx = 0
             for i in range(len(contexts)):
                 current_context_str = contexts[i]
-                image_count = len(visuals[i])
+                if visuals[i] is None:
+                    image_count = 0
+                else:
+                    image_count = len(visuals[i])
                 image_string = ""
                 for _ in range(image_count):
                     image_string += get_image_string(self.tokenizer, [splitted_image_ratio[splitted_image_idx]], self.model.cfg.mp_image_token_length)

@@ -28,12 +28,14 @@ def load_eval_results(eval_folder):
     results.sort(key=lambda x: x['step'])
     return results
 
-def get_legend_name(eval_folder):
-    """Extract legend name from folder path - last two numbers after underscore."""
+def get_legend_name(eval_folder, custom_name=None):
+    """Extract legend name from folder path or use custom name."""
+    if custom_name:
+        return custom_name
     folder_name = os.path.basename(eval_folder)
     return folder_name.split('_')[-1]
 
-def plot_results(all_results, eval_folders):
+def plot_results(all_results, eval_folders, custom_names=None):
     """Plot the evaluation results for multiple folders."""
     if not all_results:
         return
@@ -74,7 +76,8 @@ def plot_results(all_results, eval_folders):
                     metric_steps.append(result['step'])
             
             if values:
-                legend_name = get_legend_name(eval_folder)
+                custom_name = custom_names[j] if custom_names else None
+                legend_name = get_legend_name(eval_folder, custom_name)
                 color = colors[j % len(colors)]
                 ax.plot(metric_steps, values, marker='o', markersize=2, 
                        color=color, label=legend_name)
@@ -110,18 +113,37 @@ def plot_results(all_results, eval_folders):
     
     plt.close()
 
-def main():
+def parse_args():
+    """Parse command line arguments supporting both folder and folder:name format."""
     if len(sys.argv) < 2:
-        print("Usage: python plot_eval_results.py <eval_folder1> [eval_folder2] [eval_folder3] ...")
+        print("Usage: python plot_eval_results.py <eval_folder1[:name1]> [eval_folder2[:name2]] ...")
+        print("Examples:")
+        print("  python plot_eval_results.py /path/to/eval1")
+        print("  python plot_eval_results.py /path/to/eval1:Experiment1 /path/to/eval2:Experiment2")
         sys.exit(1)
     
-    eval_folders = sys.argv[1:]
+    eval_folders = []
+    custom_names = []
+    
+    for arg in sys.argv[1:]:
+        if ':' in arg:
+            folder, name = arg.rsplit(':', 1)
+            eval_folders.append(folder)
+            custom_names.append(name)
+        else:
+            eval_folders.append(arg)
+            custom_names.append(None)
     
     # Check if all folders exist
     for eval_folder in eval_folders:
         if not os.path.exists(eval_folder):
             print(f"Error: Folder {eval_folder} does not exist")
             sys.exit(1)
+    
+    return eval_folders, custom_names
+
+def main():
+    eval_folders, custom_names = parse_args()
     
     # Load results from all folders
     all_results = []
@@ -136,7 +158,7 @@ def main():
             all_results.append([])
     
     if any(all_results):
-        plot_results(all_results, eval_folders)
+        plot_results(all_results, eval_folders, custom_names)
     else:
         print("No evaluation results found in any folder")
 
