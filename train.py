@@ -149,7 +149,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
             if dataset_name=='art':
                 continue
             else:
-                train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name, cache_dir="/scratch/cache/")['train']
+                train_ds = load_from_disk(os.path.join(train_cfg.train_dataset_path, dataset_name))
                 train_ds[0] # Check if the dataset is loaded correctly
                 # if len(train_ds) > 1000000:  # Sample first 1M samples to reduce unbalance between datasets
                     # train_ds = train_ds.select(range(1000000))
