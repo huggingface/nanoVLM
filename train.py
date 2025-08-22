@@ -163,6 +163,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
         raise ValueError("No valid datasets were loaded. Please check your dataset path and configurations.")
     
     train_ds = concatenate_datasets(combined_train_data)
+    print(train_ds)
     # Apply cutoff if specified
     if train_cfg.data_cutoff_idx is None:
         total_samples = len(train_ds)  # Use the entire dataset

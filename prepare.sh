@@ -15,9 +15,9 @@ echo "--- Starting parallel data copy on all nodes... ---"
 # This srun command launches the copy script on all 4 nodes simultaneously.
 # The shell will not proceed to the next line until ALL nodes have finished.
 srun --ntasks-per-node=1 bash -c '
-  mkdir -p /scratch/cache/asterix_rated && \
-  cd /fsx/luis_wiedmann/.cache/asterix_rated && \
-  find . -type f | parallel -j 16 rsync -R {} /scratch/cache/asterix_rated/
+  mkdir -p /scratch/cache/the_cauldron && \
+  cd /fsx/luis_wiedmann/.cache/the_cauldron && \
+  find . -type f | parallel -j 16 rsync -R {} /scratch/cache/the_cauldron/
 '
 echo "--- All nodes have finished copying data. ---"
 

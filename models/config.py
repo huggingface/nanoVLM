@@ -73,7 +73,7 @@ class TrainConfig:
     max_sample_length: int = 4096
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
-    train_dataset_path: str = '/fsx/luis_wiedmann/datasets/asterix_rated'
+    train_dataset_path: str = '/fsx/luis_wiedmann/datasets/the_cauldron'
     train_dataset_name: tuple[str, ...] = ("all", ) #('allava_laion', 'allava_vflan') #
     relevance_min_rating: int = 1
     image_correspondence_min_rating: int = 1
