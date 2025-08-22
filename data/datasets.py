@@ -28,7 +28,7 @@ class BaseDataset(Dataset):
 
     def _get_messages(self, item, splitted_image_counts):
         messages = []
-        for index, text in enumerate(item['texts']):
+        for index, text in enumerate(item['conversations']):
             try:
                 if item.get('relevance_ratings') is not None and item['relevance_ratings'][index] is not None and item['relevance_ratings'][index] < self.relevance_min_rating:
                     continue
@@ -41,8 +41,11 @@ class BaseDataset(Dataset):
             except Exception as e:
                 logging.warning(f"Error processing item: {item}, index: {index}: {e}")
 
-            messages.append({"role": "user", "content": text['user']})
-            messages.append({"role": "assistant", "content": text['assistant']})
+            if text['from'] == 'human':
+                role = 'user'
+            else:
+                role = 'assistant'
+            messages.append({"role": role, "content": text['value']})
 
         if len(messages) == 0:
             return messages
@@ -116,10 +119,10 @@ class VQADataset(BaseDataset):  # Visual Question Answering Dataset
 
     def _process_data(self, item):
         # Handle images (should be a list)
-        if item['images'] is None:
+        if item['image'] is None:
             images_data = []
         else:
-            images_data = item['images']
+            images_data = item['image']
             if not isinstance(images_data, list):
                 images_data = [images_data]
 
