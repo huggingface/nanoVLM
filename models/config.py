@@ -74,7 +74,7 @@ class TrainConfig:
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
     train_dataset_path: str = '/fsx/luis_wiedmann/datasets/the_cauldron'
-    train_dataset_name: tuple[str, ...] = ("all", ) #('allava_laion', 'allava_vflan') #
+    train_dataset_name: tuple[str, ...] = ('rendered_text', 'localized_narratives', 'scienceqa', 'tqa', 'screen2words', 'finqa', 'raven', 'vqarad', 'iconqa', 'vistext', 'iam', 'diagram_image_to_text', 'tallyqa', 'aokvqa', 'robut_wikisql', 'chart2text', 'geomverse', 'st_vqa', 'hateful_memes', 'hitab', 'intergps', 'clevr', 'chartqa', 'docvqa', 'datikz', 'ai2d', 'figureqa', 'multihiertt', 'infographic_vqa', 'visual7w', 'textvqa', 'dvqa', 'robut_wtq', 'ocrvqa', 'tabmwp', 'tat_qa', 'nlvr2', 'mapqa', 'visualmrc', 'textcaps', 'robut_sqa', 'cocoqa', 'plotqa', 'spot_the_diff', 'mimic_cgd') #('allava_laion', 'allava_vflan') #
     relevance_min_rating: int = 1
     image_correspondence_min_rating: int = 1
     visual_dependency_min_rating: int = 1
