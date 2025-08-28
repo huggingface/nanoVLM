@@ -149,7 +149,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
             if dataset_name in ['art']: #, 'chinesememe', 'datik', 'wildvision', 'geoqa+(mathv360k)', 'unigeo(mathv360k)', 'ctw', 'k12_printing', 'svrd', 'tal_ocr_eng', 'est_vqa', 'text_ruozhiba'
                 continue
             else:
-                train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name, cache_dir="/scratch/cache/")['train']
+                train_ds = load_from_disk(os.path.join(train_cfg.train_dataset_path, dataset_name))
                 train_ds[0] # Check if the dataset is loaded correctly
                 # if len(train_ds) > 1000000:  # Sample first 1M samples to reduce unbalance between datasets
                     # train_ds = train_ds.select(range(1000000))
@@ -163,6 +163,7 @@ def get_dataloaders(train_cfg, vlm_cfg):
         raise ValueError("No valid datasets were loaded. Please check your dataset path and configurations.")
     
     train_ds = concatenate_datasets(combined_train_data)
+    print(train_ds)
     # Apply cutoff if specified
     if train_cfg.data_cutoff_idx is None:
         total_samples = len(train_ds)  # Use the entire dataset

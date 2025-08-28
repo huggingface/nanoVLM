@@ -21,7 +21,7 @@ def get_image_processor(max_img_size, splitted_image_size, resize_to_max_side_le
     return transforms.Compose([
         DynamicResize(splitted_image_size, max_img_size, resize_to_max_side_len),
         transforms.ToTensor(),
-        GlobalAndSplitImages(splitted_image_size),
+        SplitImage(splitted_image_size),
     ])
 
 def get_image_string(tokenizer, splitted_image_counts, mp_image_token_length):
