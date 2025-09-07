@@ -75,3 +75,29 @@ class TrainConfig:
     lmms_eval_tasks: str = 'mmstar,mmmu,ocrbench,textvqa' # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')
     lmms_eval_limit: int = 2000
     lmms_eval_batch_size: int = 128
+
+    # LoRA Configuration
+    use_lora: bool = True
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
+    lora_target_modules: list[str] = field(default_factory=lambda: [
+        # Vision Transformer
+        "vision_encoder.blocks.*.attn.qkv_proj",
+        "vision_encoder.blocks.*.attn.out_proj", 
+        "vision_encoder.blocks.*.mlp.fc1",
+        "vision_encoder.blocks.*.mlp.fc2",
+        
+        # Language Model  
+        "decoder.blocks.*.attn.q_proj",
+        "decoder.blocks.*.attn.k_proj",
+        "decoder.blocks.*.attn.v_proj", 
+        "decoder.blocks.*.attn.out_proj",
+        "decoder.blocks.*.mlp.gate_proj",
+        "decoder.blocks.*.mlp.up_proj",
+        "decoder.blocks.*.mlp.down_proj",
+        "decoder.head",
+        
+        # Modality Projector
+        "MP.proj",
+    ])
