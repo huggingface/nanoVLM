@@ -29,3 +29,5 @@ results/
 *.arrow
 /shards/*
 *.png
+
+env/

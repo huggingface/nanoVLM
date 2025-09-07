@@ -13,6 +13,7 @@ from datasets import load_dataset, concatenate_datasets, get_dataset_config_name
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
+from peft import LoraConfig, get_peft_model, TaskType
 
 torch.manual_seed(0)
 if torch.cuda.is_available():
@@ -210,6 +211,24 @@ def train(train_cfg, vlm_cfg):
     else:
         model = VisionLanguageModel(vlm_cfg, load_backbone=vlm_cfg.vlm_load_backbone_weights)
     
+    # Apply LoRA if enabled
+    if train_cfg.use_lora:
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,  # Now works with the added prepare_inputs_for_generation method
+            r=train_cfg.lora_rank,
+            lora_alpha=train_cfg.lora_alpha,
+            lora_dropout=train_cfg.lora_dropout,
+            target_modules=train_cfg.lora_target_modules,
+            bias="none",
+        )
+        
+        model = get_peft_model(model, lora_config)
+        
+        if is_master():
+            print("\n=== LoRA Configuration ===")
+            model.print_trainable_parameters()
+            print("===========================\n")
+
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
         print(f"Training summary{' (global)' if is_dist() else ''}: {len(train_loader.dataset)} samples, {int(len(train_loader)*get_world_size())} batches/epoch, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
@@ -299,7 +318,7 @@ def train(train_cfg, vlm_cfg):
             )
             with autocast_context:
                 with context:
-                    _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+                    _, loss = model(input_ids=input_ids, images=images, attention_mask=attention_mask, labels=labels)
 
             if train_cfg.gradient_accumulation_steps > 1:
                 loss = loss / train_cfg.gradient_accumulation_steps
@@ -357,7 +376,7 @@ def train(train_cfg, vlm_cfg):
                         attention_mask = batch["attention_mask"].to(device)
 
                         with autocast_context:
-                            _, loss = model(input_ids, images, attention_mask=attention_mask, targets=labels)
+                            _, loss = model(input_ids=input_ids, images=images, attention_mask=attention_mask, labels=labels)
 
                         total_val_loss += loss.item()
                     avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0
