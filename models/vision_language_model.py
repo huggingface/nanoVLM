@@ -33,6 +33,39 @@ class VisionLanguageModel(nn.Module):
         self.load_backbone = load_backbone
         self.tokenizer = get_tokenizer(cfg.lm_tokenizer, cfg.vlm_extra_tokens, cfg.lm_chat_template)
 
+        # Add config attribute for PEFT compatibility
+        self.config = self._create_hf_compatible_config()
+
+    def _create_hf_compatible_config(self):
+        """Create a minimal HuggingFace-compatible config for PEFT"""
+        
+        class HFCompatibleConfig:
+            """A config class that behaves like both an object and a dictionary for PEFT compatibility"""
+            def __init__(self, cfg):
+                self.model_type = "vision_language_model"  # Custom model type
+                self.vocab_size = cfg.lm_vocab_size
+                self.hidden_size = cfg.lm_hidden_dim
+                self.num_hidden_layers = cfg.lm_n_blocks
+                self.num_attention_heads = cfg.lm_n_heads
+                self.intermediate_size = cfg.lm_inter_dim
+                self.max_position_embeddings = cfg.lm_max_position_embeddings
+                self.rms_norm_eps = cfg.lm_rms_eps
+                self.tie_word_embeddings = cfg.lm_tie_weights
+                
+            def get(self, key, default=None):
+                """Dictionary-like get method for PEFT compatibility"""
+                return getattr(self, key, default)
+                
+            def __getitem__(self, key):
+                """Dictionary-like access for PEFT compatibility"""
+                return getattr(self, key)
+                
+            def __contains__(self, key):
+                """Dictionary-like 'in' operator for PEFT compatibility"""
+                return hasattr(self, key)
+        
+        return HFCompatibleConfig(self.cfg)
+
     def _replace_img_tokens_with_embd(self, input_ids, token_embd, image_embd):
         """
         Replace every image-token placeholder in `input_ids` with the corresponding slice
@@ -48,7 +81,15 @@ class VisionLanguageModel(nn.Module):
 
         return updated_token_embd
 
-    def forward(self, input_ids, images, attention_mask=None, targets=None):
+    
+    def forward(self, input_ids, images=None, attention_mask=None, labels=None, **kwargs):
+        # Handle different argument names - PEFT might pass 'labels' instead of 'targets'
+        targets = labels if labels is not None else kwargs.get('targets', None)
+
+        # Handle cases where images might be passed through kwargs
+        if images is None:
+            images = kwargs.get('images', [])
+
         if isinstance(images, list):
             if not images: # Handle cases with no images
                 images = torch.empty(0, self.cfg.vit_channels, self.cfg.vit_image_size, self.cfg.vit_image_size, device=input_ids.device)
@@ -76,6 +117,17 @@ class VisionLanguageModel(nn.Module):
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
 
         return logits, loss
+    
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        """
+        Prepare inputs for generation. Required by PEFT for CAUSAL_LM task type.
+        This is a minimal implementation that just returns the basic inputs.
+        """
+
+        return {
+            "input_ids": input_ids,
+            **kwargs
+        }
 
     @torch.inference_mode()
     def generate(self, input_ids, images, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
