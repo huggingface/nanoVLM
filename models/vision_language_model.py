@@ -221,7 +221,10 @@ class VisionLanguageModel(nn.Module):
 
         # Load config
         with open(config_path, "r") as f:
-            cfg = VLMConfig(**json.load(f))
+            
+            config_json = json.load(f)
+            config_json.pop('lm_eos_token_id', None)
+            cfg = VLMConfig(**config_json)
 
         # Initialize model without loading the backbone
         model = cls(cfg, load_backbone=False)
