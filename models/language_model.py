@@ -82,14 +82,11 @@ class RotaryEmbedding(nn.Module):
         """
 
         batch_size, seq_len = position_ids.shape
-        # Dynamic scaling for longer sequences
-        # Divide the angle frequency to fit more rotation into the embedding space.
-        max_seq = position_ids.max() + 1
-        if max_seq > self.original_max_seq_len:
-            scale = max_seq / self.original_max_seq_len
-            inv_freq = self.inv_freq / scale
-        else:
-            inv_freq = self.inv_freq
+        # Note: Dynamic RoPE extension removed for export compatibility
+        # Original implementation had data-dependent control flow:
+        #   if max_seq > self.original_max_seq_len: scale = max_seq / self.original_max_seq_len
+        # This breaks torch.export. Model works correctly up to original_max_seq_len.
+        inv_freq = self.inv_freq
             
         # Compute theta = position * frequency
         # Flatten position_ids for batch processing
@@ -268,14 +265,43 @@ class LanguageModelGroupedQueryAttention(nn.Module):
             # This additive_attn_mask shape is [B, 1, 1, T_kv]
 
         if self.sdpa and x.device.type != 'mps':
-            # During decode, no additional masking needed as [1, T_kv] is naturally causal
-            is_causal = (T_curr == T_kv and T_curr > 1)
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q, k_exp, v_exp,
-                attn_mask=additive_attn_mask, 
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=is_causal
-            )
+            # For export compatibility with dynamic shapes, we always use explicit masks
+            # instead of is_causal (which becomes a SymBool and breaks SDPA)
+
+            # Check if this is prefill (T_curr == T_kv)
+            # We need causal masking during prefill
+            needs_causal = (T_curr == T_kv and T_curr > 1)
+
+            # Build the attention mask
+            if needs_causal or additive_attn_mask is not None:
+                final_mask = torch.zeros(1, 1, T_curr, T_kv, device=q.device, dtype=q.dtype)
+
+                # Add causal mask if needed (prefill phase)
+                if needs_causal:
+                    causal_mask = torch.triu(
+                        torch.ones(T_curr, T_curr, device=q.device, dtype=q.dtype) * torch.finfo(q.dtype).min,
+                        diagonal=1
+                    ).view(1, 1, T_curr, T_curr)
+                    final_mask = final_mask + causal_mask
+
+                # Add padding mask if provided
+                if additive_attn_mask is not None:
+                    final_mask = final_mask + additive_attn_mask
+
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k_exp, v_exp,
+                    attn_mask=final_mask,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=False
+                )
+            else:
+                # No masking needed (decode with no padding)
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k_exp, v_exp,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=False
+                )
         else:
             # Manual attention implementation
             attn = torch.matmul(q, k_exp.transpose(2, 3)) / math.sqrt(self.head_dim) # (B, n_heads, T_curr, T_kv)
@@ -416,7 +442,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0):
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0, position_ids: torch.Tensor=None):
         """
         Performs a forward pass through the language model.
 
@@ -433,6 +459,9 @@ class LanguageModel(nn.Module):
             start_pos (int, optional): The starting position index for the current input
                 sequence. Used to compute rotary positional embeddings correctly,
                 especially for cached sequences during generation. Default is 0.
+                Ignored if position_ids is provided.
+            position_ids (Tensor, optional): Position indices tensor of shape (batch_size, sequence_length).
+                If provided, overrides start_pos for position computation. Used for export compatibility.
 
         Returns:
             Tuple:
@@ -459,9 +488,15 @@ class LanguageModel(nn.Module):
 
         # T_curr is the length of the current input sequence
         B, T_curr, _ = x.size()
-        
-        # Create position_ids for the current sequence based on start_pos
-        current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
+
+        # Create position_ids for the current sequence
+        if position_ids is None:
+            # For backward compatibility and normal usage
+            current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
+        else:
+            # For export compatibility - position_ids provided directly
+            current_position_ids = position_ids
+
         cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
         # Initialize new KV cache if none provided
