@@ -2,29 +2,27 @@
 #SBATCH --job-name=train_nanoVLM_torchrun
 #SBATCH --output=logs/train_nanoVLM/%A_%a.out
 #SBATCH --error=logs/train_nanoVLM/%A_%a.err
-#SBATCH --time=47:59:00
+#SBATCH --time=95:59:00
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=88
 #SBATCH --partition=hopper-prod
-#SBATCH --qos=high
-#SBATCH --array=4
+#SBATCH --qos=normal
 
-echo "--- Starting parallel data copy on all nodes... ---"
-# This srun command launches the copy script on all 4 nodes simultaneously.
-# The shell will not proceed to the next line until ALL nodes have finished.
-srun --ntasks-per-node=1 bash -c '
-  mkdir -p /scratch/cache/asterix_rated && \
-  cd /fsx/luis_wiedmann/.cache/asterix_rated && \
-  find . -type f | parallel -j 16 rsync -R {} /scratch/cache/asterix_rated/
-'
-echo "--- All nodes have finished copying data. ---"
-
-module load cuda/12.9
+# echo "--- Starting parallel data copy on all nodes... ---"
+# # This srun command launches the copy script on all 4 nodes simultaneously.
+# # The shell will not proceed to the next line until ALL nodes have finished.
+# srun --ntasks-per-node=1 bash -c '
+#   mkdir -p /scratch/cache/FineVision && \
+#   cd /fsx/.cache/HuggingFaceM4___fine_vision && \
+#   find . -type f | parallel -j 16 rsync -R {} /scratch/cache/FineVision/
+# '
+# echo "--- All nodes have finished copying data. ---"
 
 export RDMAV_FORK_SAFE=1
 export FI_EFA_FORK_SAFE=1
+export FI_EFA_USE_HUGE_PAGE=0
 export FI_EFA_USE_DEVICE_RDMA=1
 export FI_PROVIDER=efa
 export FI_LOG_LEVEL=1
@@ -36,8 +34,10 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=0
 export NCCL_DEBUG=WARN
 
+module load cuda/12.9
+
 # Change to project directory
-cd /fsx/luis_wiedmann/nanoVLM
+cd /fsx/andi/nanoVLM
 source .venv/bin/activate
 
 # Activate virtual environment

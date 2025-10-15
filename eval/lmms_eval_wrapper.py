@@ -113,7 +113,7 @@ class NanoVLMWrapper(lmms):
                 "user_prefix": "",
                 "user_suffix": ""
             },
-            "docvqa_val": {
+            ("docvqa_val", "docvqa_test"): {
                 "text_replacements": {},
                 "assistant_prefix": "",
                 "user_prefix": "Give a short and terse answer to the following question. "
@@ -138,7 +138,7 @@ class NanoVLMWrapper(lmms):
                                 + "Question: ",
                 "user_suffix": ""
             },
-            "textvqa_val": {
+            ("textvqa_val", "textvqa_test"): {
                 "text_replacements": {},
                 "assistant_prefix": "",
                 "user_prefix": "Answer the following question about the image using as few words as possible. "
@@ -152,7 +152,7 @@ class NanoVLMWrapper(lmms):
                                 + "Question: ",
                 "user_suffix": ""
             },
-            "mmmu_val": {
+            ("mmmu_val", "mmmu_test"): {
                 "text_replacements": {
                     "Question:": "",
                     "Answer with the option's letter from the given choices directly.": "Answer with the letter directly.",
@@ -224,9 +224,17 @@ class NanoVLMWrapper(lmms):
         re_ords = utils.Collator([reg.args for reg in requests], _collate, grouping=True)
         chunks = re_ords.get_batched(n=self.batch_size, batch_fn=None)
         for chunk in chunks:
-            contexts, all_gen_kwargs, doc_to_visual, doc_id, task, split = zip(*chunk)
-            visuals = [doc_to_visual[0](self.task_dict[task][split][ids]) for ids, task, split in zip(doc_id, task, split)]
-            images, splitted_image_ratio = self._prepare_visual_input(self.flatten(visuals))
+            try:
+                contexts, all_gen_kwargs, doc_to_visual, doc_id, task, split = zip(*chunk)
+                visuals = [dtv(self.task_dict[t][s][i]) for dtv, i, t, s in zip(doc_to_visual, doc_id, task, split)]
+                images, splitted_image_ratio = self._prepare_visual_input(self.flatten(visuals))
+            except Exception as e:
+                print(f"Error preparing visual input: {e}")
+                if len(contexts) > 0:
+                    pbar.update(len(contexts))
+                    generated_texts = [""] * len(contexts)
+                    res.extend(generated_texts)
+                continue
 
             messages = []
             splitted_image_idx = 0

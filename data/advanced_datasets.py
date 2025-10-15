@@ -62,6 +62,9 @@ class ConstantLengthDataset(IterableDataset):
 
         def make_base_iterator():
             """Return a (sharded) iterator over the underlying dataset."""
+            if not hasattr(self.dataset.dataset, "__len__"):
+                return self.dataset.iter_for_worker()  # with iterable datasets, each worker gets different shards
+            
             all_indices = range(len(self.dataset))
 
             # Shard the *indices* first, before any data is fetched.

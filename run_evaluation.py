@@ -53,7 +53,8 @@ def main():
 
     output_dir = os.path.join('eval_results', args.run_name)
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f'step_{args.global_step}.json')
+    sanitized_tasks = args.tasks.replace("/", "_")
+    output_path = os.path.join(output_dir, f'step_{args.global_step}_{sanitized_tasks}.json')
     
     with open(output_path, 'w') as f:
         json.dump(output_data, f, indent=4)

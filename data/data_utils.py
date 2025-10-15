@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-
+from collections.abc import Iterator
 
 def _is_batch_valid(batch):
     """
@@ -41,7 +41,10 @@ def synchronized_dataloader_step(train_loader, is_dist):
         return
     
     # For DDP, we need synchronization.
-    train_iter = iter(train_loader)
+    if isinstance(train_loader, Iterator):
+        train_iter = train_loader
+    else:
+        train_iter = iter(train_loader)
     
     while True:
         is_valid = False
