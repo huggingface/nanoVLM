@@ -105,8 +105,7 @@ class BaseDataset(Dataset):
 
 
 class VQADataset(BaseDataset):  # Visual Question Answering Dataset
-    def iter_for_worker(self, worker_id, num_workers):
-        # dataset = split_dataset_by_node(self.dataset, rank=worker_id, world_size=num_workers)
+    def iter_for_worker(self):  # with iterable datasets, each worker gets different shards
         for data in self.dataset:
             yield self._process_data(data)
 

@@ -1,4 +1,6 @@
 import os
+import re
+import json
 import math
 import time
 import torch
@@ -98,7 +100,6 @@ def wrap_model(model):
     return DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
 
 def get_run_name(train_cfg, vlm_cfg):
-    dataset_size = "full_ds" if train_cfg.data_cutoff_idx is None else f"{train_cfg.data_cutoff_idx}samples"
     batch_size = f"bs{int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}"
     max_training_steps = f"{train_cfg.max_training_steps}"
     learning_rate = f"lr_vision_{train_cfg.lr_vision_backbone}-language_{train_cfg.lr_language_backbone}-{train_cfg.lr_mp}"
@@ -108,7 +109,7 @@ def get_run_name(train_cfg, vlm_cfg):
     mp = f"mp{vlm_cfg.mp_pixel_shuffle_factor}"
     llm = f"{vlm_cfg.lm_model_type.split('/')[-1]}"
 
-    return f"nanoVLM_{vit}_{mp}_{llm}_{num_gpus}_{dataset_size}_{batch_size}_{max_training_steps}_{learning_rate}_{date}"
+    return f"nanoVLM_{vit}_{mp}_{llm}_{num_gpus}_{batch_size}_{max_training_steps}_{learning_rate}_{date}"
 
 def get_dataloaders(train_cfg, vlm_cfg):
     print(f"Getting dataloaders from {train_cfg.train_dataset_path}")
@@ -139,8 +140,11 @@ def get_dataloaders(train_cfg, vlm_cfg):
                 print(f"Warning: Failed to load dataset shard '{dataset_name}' from '{train_cfg.train_dataset_path}'. Error: {e}")
                 continue
         try:
-            train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name)['train']
-            train_ds[0] # Check if the dataset is loaded correctly
+            train_ds = load_dataset(train_cfg.train_dataset_path, dataset_name, streaming=train_cfg.stream_dataset, on_bad_files='warn')['train']
+            if train_cfg.stream_dataset:
+                next(iter(train_ds)) # Check if the dataset is loaded correctly
+            else:
+                train_ds[0] # Check if the dataset is loaded correctly
             combined_train_data.append(train_ds)
         except Exception as e:
             if is_master():
@@ -151,27 +155,51 @@ def get_dataloaders(train_cfg, vlm_cfg):
         raise ValueError("No valid datasets were loaded. Please check your dataset path and configurations.")
     
     train_ds = concatenate_datasets(combined_train_data)
-    # Apply cutoff if specified
-    if train_cfg.data_cutoff_idx is None:
-        total_samples = len(train_ds)  # Use the entire dataset
-    else:
-        total_samples = min(len(train_ds), train_cfg.data_cutoff_idx)
 
-    train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatenated datasets  
+    if not train_cfg.stream_dataset:
+        train_ds = train_ds.shuffle(seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatenated datasets  
+
 
     if is_dist():  # We need to shard the dataset in DDP since we are using an iterable dataset instead of the distributed sampler
         train_ds = train_ds.shard(num_shards=get_world_size(), index=get_rank())
 
-    val_size = int(len(train_ds) * train_cfg.val_ratio)
-    print(f"Val size: {val_size}")
+    # train_ds = train_ds.shuffle(buffer_size=10000, seed=0) # Shuffle the training dataset, so train and val get equal contributions from all concatenated datasets  
 
-    val_ds = train_ds.select(range(val_size))
-    train_ds = train_ds.select(range(val_size, len(train_ds)))
+    val_size = int(train_cfg.val_size/get_world_size())
+    print(f"Val size per GPU: {val_size}")
 
-    train_dataset = VQADataset(train_ds, tokenizer, image_processor, vlm_cfg.mp_image_token_length, train_cfg.relevance_min_rating, train_cfg.image_correspondence_min_rating, train_cfg.visual_dependency_min_rating, train_cfg.formatting_min_rating)
-    val_dataset = VQADataset(val_ds, tokenizer, image_processor, vlm_cfg.mp_image_token_length, train_cfg.relevance_min_rating, train_cfg.image_correspondence_min_rating, train_cfg.visual_dependency_min_rating, train_cfg.formatting_min_rating)
+    if train_cfg.stream_dataset:
+        val_ds = train_ds.take(val_size)
+        train_ds = train_ds.skip(val_size)
+    else:
+        val_ds = train_ds.select(range(val_size))
+        train_ds = train_ds.select(range(val_size, len(train_ds)))
+
+    train_dataset = VQADataset(
+        train_ds,
+        tokenizer,
+        image_processor,
+        vlm_cfg.mp_image_token_length,
+        train_cfg.relevance_min_rating,
+        train_cfg.image_correspondence_min_rating,
+        train_cfg.visual_dependency_min_rating,
+        train_cfg.formatting_min_rating,
+    )
+    val_dataset = VQADataset(
+        val_ds,
+        tokenizer,
+        image_processor,
+        vlm_cfg.mp_image_token_length,
+        train_cfg.relevance_min_rating,
+        train_cfg.image_correspondence_min_rating,
+        train_cfg.visual_dependency_min_rating,
+        train_cfg.formatting_min_rating,
+    )
 
     train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*4, queue_size=8,
+                                        max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
+
+    val_dataset = ConstantLengthDataset(val_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*4, queue_size=8,
                                         max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
 
     # Create collators
@@ -186,29 +214,21 @@ def get_dataloaders(train_cfg, vlm_cfg):
         train_dataset,
         batch_size=train_cfg.batch_size,    # =per device BS in DDP
         collate_fn=vqa_collator,
-        num_workers=4,
+        num_workers=3,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=False,
         drop_last=True,
         worker_init_fn=seed_worker,
         generator=g,
     )
 
-    val_sampler = DistributedSampler(
-        val_dataset,
-        rank=get_rank(),
-        num_replicas=get_world_size(),
-        shuffle=False  # Usually False for validation
-    )
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_cfg.batch_size,
-        sampler=val_sampler,
         collate_fn=vqa_collator,
-        num_workers=2,
+        num_workers=1,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=False,
         drop_last=True,
         worker_init_fn=seed_worker,
         generator=g,
@@ -216,11 +236,13 @@ def get_dataloaders(train_cfg, vlm_cfg):
 
     # Warmup dataloaders to kickstart worker processes
     print("Warming up dataloaders...")   
-    next(iter(train_loader))
-    next(iter(val_loader))
+    iter_train_loader = iter(train_loader)
+    iter_val_loader = iter(val_loader)
+    next(iter_train_loader)
+    next(iter_val_loader)
     print("Warmup complete.")
 
-    return train_loader, val_loader
+    return train_loader, val_loader, iter_train_loader, iter_val_loader
 
 # Cosine learning rate schedule with warmup (from Karpathy)
 # https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L353
@@ -240,7 +262,7 @@ def get_lr(it, max_lr, max_steps):
     return min_lr + coeff * (max_lr - min_lr)
 
 def train(train_cfg, vlm_cfg):
-    train_loader, val_loader = get_dataloaders(train_cfg, vlm_cfg)
+    train_loader, val_loader, iter_train_loader, iter_val_loader = get_dataloaders(train_cfg, vlm_cfg)
 
     if is_dist():
         print("Rank", get_rank(), "Waiting for all workers to get dataloaders...")
@@ -251,10 +273,6 @@ def train(train_cfg, vlm_cfg):
             print("All workers have gotten dataloaders.")
 
     run_name = get_run_name(train_cfg, vlm_cfg)
-    total_dataset_size = len(train_loader.dataset)
-    if train_cfg.log_wandb and is_master():
-        if train_cfg.data_cutoff_idx is None:
-            run_name = run_name.replace("full_ds", f"{total_dataset_size}samples")
     if train_cfg.log_wandb and is_master():
         run = wandb.init(
             entity=train_cfg.wandb_entity,
@@ -278,12 +296,12 @@ def train(train_cfg, vlm_cfg):
     
     if is_master():
         print(f"nanoVLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters") 
-        print(f"Training summary{' (global)' if is_dist() else ''}: {-1*get_world_size()} samples, {int(len(train_loader)*get_world_size())} batches/epoch, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
+        print(f"Training summary{' (global)' if is_dist() else ''}: {-1*get_world_size()} samples, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
         if is_dist():
-            print(f"Training summary per GPU: {len(train_loader)} batches/epoch, batch size {train_loader.batch_size}")
-        print(f"Validation summary{' (global)' if is_dist() else ''}: {-1*get_world_size()} samples, {int(len(val_loader)*get_world_size())} batches/epoch, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
+            print(f"Training summary per GPU: batch size {train_loader.batch_size}")
+        print(f"Validation summary{' (global)' if is_dist() else ''}: {-1*get_world_size()} samples, batch size {int(train_cfg.batch_size*get_world_size()*train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_dist() else ''}")
         if is_dist():
-            print(f"Validation summary per GPU: {len(val_loader)} batches/epoch, batch size {val_loader.batch_size}")
+            print(f"Validation summary per GPU: batch size {val_loader.batch_size}")
 
     # Define optimizer groups
     # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train them with the same learning rate
@@ -353,8 +371,8 @@ def train(train_cfg, vlm_cfg):
         data_load_start = time.time()
 
         print("Starting training loop")
-        for i, batch in enumerate(synchronized_dataloader_step(train_loader, is_dist())):
-            is_update_step = (i + 1) % train_cfg.gradient_accumulation_steps == 0 or i + 1 == len(train_loader)
+        for i, batch in enumerate(synchronized_dataloader_step(iter_train_loader, is_dist())):
+            is_update_step = (i + 1) % train_cfg.gradient_accumulation_steps == 0
             batch_start_time = time.time()
             images = batch["images"]
             input_ids = batch["input_ids"].to(device)
@@ -432,14 +450,15 @@ def train(train_cfg, vlm_cfg):
             accumulated_stats['post_process_time'].append(post_process_time)
             accumulated_stats['images_per_sample'].extend(images_per_sample)
             
-            if train_cfg.eval_in_epochs and global_step % train_cfg.eval_interval == 0 and is_update_step and global_step > 0:
+            if train_cfg.eval_in_epochs and global_step % train_cfg.eval_interval == 0 and is_update_step:
+                print("Starting evaluation")
                 model.eval()
                 if device == "cuda":
                     torch.cuda.empty_cache()
                 with torch.no_grad():
                     total_val_loss = 0
                     val_batches = 0
-                    for batch in synchronized_dataloader_step(val_loader, is_dist()):
+                    for batch in synchronized_dataloader_step(iter_val_loader, is_dist()):
                         if val_batches > 64:
                             print(f"Evaluated {val_batches} batches")
                             break
@@ -453,6 +472,8 @@ def train(train_cfg, vlm_cfg):
 
                         total_val_loss += loss.item()
                         val_batches += 1
+                    
+                    iter_val_loader = iter(val_loader)
                     avg_val_loss = total_val_loss / val_batches if val_batches > 0 else 0
                     avg_val_loss = mean(dist_gather(avg_val_loss)) if is_dist() else avg_val_loss
 
@@ -519,28 +540,31 @@ def train(train_cfg, vlm_cfg):
                     if os.path.exists(eval_results_dir):
                         logged_results_count = 0
                         for result_file in os.listdir(eval_results_dir):
-                            if result_file.startswith('step_') and result_file.endswith('.json'):
-                                try:
-                                    step = int(result_file.replace('step_', '').replace('.json', ''))
-                                    if step not in logged_eval_steps:
-                                        with open(os.path.join(eval_results_dir, result_file), 'r') as f:
-                                            import json
-                                            eval_data = json.load(f)
-                                        
-                                        lmms_results = eval_data.get('results', {})
-                                        if lmms_results:
-                                            metrics = {f"lmms_eval/{key}": value for key, value in lmms_results.items()}
-                                            metrics[lmms_eval_step] = eval_data['global_step']
-                                            if logged_results_count > 0:
-                                                print(f"Logging more than one lmms-eval result for step {global_step}, try to avoid this.")
-                                            run.log(metrics, step=global_step+logged_results_count)  # We need to the global step otherwise wandb raises the step counter
-                                            logged_results_count += 1
-                                            print(f"Logged lmms-eval results from step {eval_data['global_step']}")
-                                        
-                                        logged_eval_steps.add(step)
-                                except (ValueError, KeyError, json.JSONDecodeError) as e:
-                                    print(f"Warning: Could not process eval result file {result_file}. Error: {e}")
-                                    continue
+                            # Match only files like "step_1234.json" (no extra text)
+                            match = re.fullmatch(r"step_(\d+)\.json", result_file)
+                            if not match:
+                                continue  # skip if the filename has extra text like taskname
+
+                            try:
+                                step = int(match.group(1))
+                                if step not in logged_eval_steps:
+                                    with open(os.path.join(eval_results_dir, result_file), 'r') as f:
+                                        eval_data = json.load(f)
+
+                                    lmms_results = eval_data.get('results', {})
+                                    if lmms_results:
+                                        metrics = {f"lmms_eval/{key}": value for key, value in lmms_results.items()}
+                                        metrics[lmms_eval_step] = eval_data['global_step']
+                                        if logged_results_count > 0:
+                                            print(f"Logging more than one lmms-eval result for step {global_step}, try to avoid this.")
+                                        run.log(metrics, step=global_step + logged_results_count)
+                                        logged_results_count += 1
+                                        print(f"Logged lmms-eval results from step {eval_data['global_step']}")
+
+                                    logged_eval_steps.add(step)
+                            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                                print(f"Warning: Could not process eval result file {result_file}. Error: {e}")
+                                continue
                 
                 # ALL RANKS: Reset accumulators
                 for key in accumulated_stats:
@@ -567,7 +591,8 @@ def train(train_cfg, vlm_cfg):
                     break
             data_load_start = time.time()
 
-        avg_train_loss = total_train_loss / len(train_loader)
+        iter_train_loader = iter(train_loader)
+        avg_train_loss = total_train_loss / i
         # gather average batch loss from all ranks if DDP
         avg_train_loss = mean(dist_gather(avg_train_loss)) if is_dist() else avg_train_loss  
 
