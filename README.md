@@ -2,7 +2,7 @@
 
 ![nanoVLM](assets/nanoVLM.png)
 
-<a target="_blank" href="https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb">
+<a target="_blank" href="https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/train_nanoVLM.ipynb">
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 </a>
 
@@ -39,7 +39,7 @@ It is therefore a simple yet powerful platform to get started with VLMs. Perfect
 
 ## Quick Start
 
-You can either clone the repository, setup an environment and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/nanoVLM.ipynb). You can also use the [interactive notebook](./nanoVLM.ipynb) to get started!
+You can either clone the repository, setup an environment and start with the scripts, or directly [open in Colab](https://colab.research.google.com/github/huggingface/nanoVLM/blob/main/train_nanoVLM.ipynb). You can also use the [interactive notebook](./train_nanoVLM.ipynb) to get started!
 
 
 ## Environment Setup
